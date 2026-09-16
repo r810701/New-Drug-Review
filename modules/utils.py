@@ -113,3 +113,46 @@ def abbreviate_common_terms(text: str) -> str:
 def truncate(text: str, n: int = 60) -> str:
     text = (text or "").replace("\n", " ")
     return text if len(text) <= n else text[: n - 1] + "…"
+
+
+# ---------------------------------------------------------------------------
+# 使用者上傳檔案的文字擷取
+# ---------------------------------------------------------------------------
+# 修正紀錄：原本上傳區塊只把「檔名」丟進 AI 的 Prompt，AI 從未讀過檔案實際內容，
+# 導致引用文獻/數據完全是模型憑訓練知識腦補（例如同一篇知名試驗被套用到不相關主題）。
+# 這裡改成真的解析 PDF/文字檔內容，讓 AI 有真實文獻全文可以引用。
+def extract_text_from_upload(path: Path, max_chars: int = 8000) -> str:
+    """
+    嘗試擷取上傳檔案的文字內容，供塞進 AI Prompt 使用。
+    回傳值一定是「可以直接顯示給使用者看」的字串（含失敗/不支援時的說明），
+    呼叫端不需要再另外判斷是否擷取成功。
+    """
+    suffix = path.suffix.lower()
+
+    if suffix == ".pdf":
+        try:
+            import pypdf
+        except ImportError:
+            return "（系統尚未安裝 pypdf，無法解析此 PDF，請執行 `pip install pypdf`）"
+        try:
+            reader = pypdf.PdfReader(str(path))
+            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        except Exception as e:  # noqa: BLE001
+            return f"（PDF 解析失敗：{e}；此檔案內容 AI 無法讀取，請人工確認）"
+    elif suffix in (".txt", ".md"):
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    elif suffix in (".png", ".jpg", ".jpeg"):
+        return (
+            "（圖片檔案：目前系統不會自動辨識圖片內文字，AI 無法讀取此檔案的實際內容；"
+            "如有關鍵數據，請直接在下方文字欄位手動輸入摘要，否則 AI 只會憑一般知識作答）"
+        )
+    else:
+        return f"（不支援自動擷取 .{suffix.lstrip('.')} 檔案的文字內容，AI 無法讀取此檔案）"
+
+    text = text.strip()
+    if not text:
+        return "（此檔案擷取不到文字，可能是掃描影像型 PDF；AI 無法讀取實際內容，" \
+               "請人工確認或手動輸入摘要，否則 AI 只會憑一般知識作答，可能與本篇文獻不符）"
+    if len(text) > max_chars:
+        text = text[:max_chars] + f"\n...(內容過長已截斷，原文共 {len(text)} 字元，AI 僅看得到前 {max_chars} 字元)"
+    return text

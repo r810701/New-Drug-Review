@@ -20,7 +20,7 @@ from pathlib import Path
 import streamlit as st
 
 import config
-from modules import ai_engine, auth, case_store, data_loader, ppt_builder
+from modules import ai_engine, auth, case_store, data_loader, ppt_builder, utils
 from modules.schema import Deck, DrugCase, TopicContent
 from modules.utils import truncate
 
@@ -150,13 +150,23 @@ def render_upload_section(drug_case: DrugCase) -> dict[int, str]:
                 for f in files:
                     p = target_dir / f.name
                     p.write_bytes(f.getbuffer())
-                    saved_paths.append(str(p))
+                    saved_paths.append(p)
+
             ctx_parts = []
-            if saved_paths:
-                ctx_parts.append("使用者上傳檔案：" + "、".join(Path(p).name for p in saved_paths))
+            for p in saved_paths:
+                # 修正：先前這裡只丟檔名給 AI，AI 從未讀過檔案內容，
+                # 導致引用文獻/數據是模型憑訓練知識腦補，與使用者實際上傳的文獻不符。
+                # 現在改成真的解析文字內容一併塞進去。
+                extracted = utils.extract_text_from_upload(p)
+                ctx_parts.append(f"== 使用者上傳檔案：{p.name} ==\n{extracted}")
+                is_note = extracted.startswith("（") and extracted.endswith("）")
+                if is_note:
+                    st.caption(f"⚠️ {p.name}：{extracted}")
+                else:
+                    st.caption(f"✅ 已擷取「{p.name}」文字內容（{len(extracted)} 字元），將提供給 AI 參考")
             if link_text.strip():
-                ctx_parts.append(link_text.strip())
-            user_context[topic_no] = "\n".join(ctx_parts)
+                ctx_parts.append(f"== 使用者補充文字/連結 ==\n{link_text.strip()}")
+            user_context[topic_no] = "\n\n".join(ctx_parts)
     return user_context
 
 

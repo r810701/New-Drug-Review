@@ -111,9 +111,9 @@ def _set_title(slide, text: str) -> None:
 # ---------------------------------------------------------------------------
 # 主題 1：封面
 # ---------------------------------------------------------------------------
-def _fill_topic1_cover(slide, content: TopicContent, image_paths: list[Path]) -> None:
+def _fill_topic1_cover(slide, content: TopicContent, image_paths: list[Path], case_id: str = "") -> None:
     p = content.payload
-    _set_title(slide, f"新進藥品評估-{content.title or ''}".strip())
+    _set_title(slide, f"新進藥品評估-{case_id}" if case_id else "新進藥品評估")
 
     name_block = "\n".join(
         filter(None, [p.get("trade_name_en", ""), p.get("trade_name_zh", ""), p.get("generic_name", "")])
@@ -411,7 +411,7 @@ def build_deck_pptx(
             continue
 
         if topic_no == 1:
-            _fill_topic1_cover(slide, content, image_paths_by_topic.get(1, []))
+            _fill_topic1_cover(slide, content, image_paths_by_topic.get(1, []), deck.drug_case.case_id)
         elif topic_no == 2:
             _fill_topic2_table(slide, content)
         elif topic_no in (3, 4, 5, 6):

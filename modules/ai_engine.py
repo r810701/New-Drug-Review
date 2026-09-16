@@ -31,6 +31,11 @@ try:
 except ImportError:  # 讓沒裝 SDK 時模組仍可被 import（例如純編輯模式）
     anthropic = None
 
+try:
+    import google.generativeai as genai
+except ImportError:
+    genai = None
+
 
 # ---------------------------------------------------------------------------
 # 後台可調參數（Prompt 覆蓋、十宮格門檻）
@@ -214,28 +219,62 @@ def build_topic_user_prompt(
 
 
 # ---------------------------------------------------------------------------
-# 呼叫 LLM
+# 呼叫 LLM（雙供應商：Anthropic Claude / Google Gemini，擇一即可運作）
 # ---------------------------------------------------------------------------
-def _get_client() -> "anthropic.Anthropic":
+def get_current_provider() -> str:
+    """目前使用者於側邊欄選擇的供應商；未選擇時退回 config 預設值。"""
+    return st.session_state.get("ai_provider", config.DEFAULT_PROVIDER)
+
+
+def _call_claude(system_prompt: str, user_prompt: str, model: Optional[str] = None) -> str:
     if anthropic is None:
         raise RuntimeError("尚未安裝 anthropic SDK，請先 `pip install anthropic`。")
     api_key = st.session_state.get("anthropic_api_key") or os.environ.get(
         config.ANTHROPIC_API_KEY_ENV
     )
     if not api_key:
-        raise RuntimeError("尚未設定 Anthropic API Key，請於側邊欄輸入或設定環境變數。")
-    return anthropic.Anthropic(api_key=api_key)
-
-
-def call_llm(system_prompt: str, user_prompt: str, model: str = config.DEFAULT_MODEL) -> str:
-    client = _get_client()
+        raise RuntimeError(
+            "尚未設定 Anthropic API Key，請於側邊欄「AI 模型金鑰設定」輸入，"
+            "或改在下拉選單切換為 Google Gemini。"
+        )
+    client = anthropic.Anthropic(api_key=api_key)
     resp = client.messages.create(
-        model=model,
+        model=model or config.DEFAULT_MODEL,
         max_tokens=config.MAX_TOKENS_PER_TOPIC,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}],
     )
     return "".join(block.text for block in resp.content if hasattr(block, "text"))
+
+
+def _call_gemini(system_prompt: str, user_prompt: str, model: Optional[str] = None) -> str:
+    if genai is None:
+        raise RuntimeError("尚未安裝 google-generativeai SDK，請先 `pip install google-generativeai`。")
+    api_key = st.session_state.get("gemini_api_key") or os.environ.get(config.GEMINI_API_KEY_ENV)
+    if not api_key:
+        raise RuntimeError(
+            "尚未設定 Gemini API Key，請於側邊欄「AI 模型金鑰設定」輸入，"
+            "或改在下拉選單切換為 Anthropic Claude。"
+        )
+    genai.configure(api_key=api_key)
+    gen_model = genai.GenerativeModel(
+        model_name=model or config.DEFAULT_GEMINI_MODEL,
+        system_instruction=system_prompt,
+        generation_config={
+            "max_output_tokens": config.MAX_TOKENS_PER_TOPIC,
+            "response_mime_type": "application/json",
+        },
+    )
+    resp = gen_model.generate_content(user_prompt)
+    return resp.text or ""
+
+
+def call_llm(system_prompt: str, user_prompt: str, model: Optional[str] = None) -> str:
+    """依目前選定的供應商分派呼叫；回傳原始文字（預期是 JSON 字串）。"""
+    provider = get_current_provider()
+    if provider == config.PROVIDER_GEMINI:
+        return _call_gemini(system_prompt, user_prompt, model)
+    return _call_claude(system_prompt, user_prompt, model)
 
 
 # ---------------------------------------------------------------------------

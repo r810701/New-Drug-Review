@@ -43,15 +43,37 @@ def render_sidebar_kb_panel() -> None:
     else:
         st.caption("（僅管理藥師/主管可手動重新整理資料庫）")
 
-    with st.expander("🔑 AI 模型金鑰設定"):
-        key = st.text_input(
-            "Anthropic API Key",
-            value=st.session_state.get("anthropic_api_key", os.environ.get(config.ANTHROPIC_API_KEY_ENV, "")),
-            type="password",
-            help="部署到內網時建議改用環境變數 ANTHROPIC_API_KEY，這裡僅供臨時測試。",
+    with st.expander("🔑 AI 模型金鑰設定", expanded=True):
+        provider = st.selectbox(
+            "AI 供應商",
+            config.ALL_PROVIDERS,
+            index=config.ALL_PROVIDERS.index(st.session_state.get("ai_provider", config.DEFAULT_PROVIDER)),
+            format_func=lambda p: config.PROVIDER_LABEL[p],
+            help="兩者擇一即可運作；沒有 Anthropic 帳號的話，選 Google Gemini 並填入您自己的 Gemini API Key。",
         )
-        st.session_state["anthropic_api_key"] = key
-        st.caption(f"使用模型：`{config.DEFAULT_MODEL}`")
+        st.session_state["ai_provider"] = provider
+
+        if provider == config.PROVIDER_ANTHROPIC:
+            key = st.text_input(
+                "Anthropic API Key",
+                value=st.session_state.get(
+                    "anthropic_api_key", os.environ.get(config.ANTHROPIC_API_KEY_ENV, "")
+                ),
+                type="password",
+                help="部署到內網時建議改用環境變數 ANTHROPIC_API_KEY，這裡僅供臨時測試。",
+            )
+            st.session_state["anthropic_api_key"] = key
+            st.caption(f"使用模型：`{config.DEFAULT_MODEL}`")
+        else:
+            key = st.text_input(
+                "Gemini API Key",
+                value=st.session_state.get("gemini_api_key", os.environ.get(config.GEMINI_API_KEY_ENV, "")),
+                type="password",
+                help="於 Google AI Studio 申請：https://aistudio.google.com/app/apikey"
+                "；部署到內網時建議改用環境變數 GEMINI_API_KEY。",
+            )
+            st.session_state["gemini_api_key"] = key
+            st.caption(f"使用模型：`{config.DEFAULT_GEMINI_MODEL}`")
 
 
 # ---------------------------------------------------------------------------

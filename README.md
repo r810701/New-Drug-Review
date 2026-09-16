@@ -31,10 +31,18 @@ data/                        # 執行期產生：使用者帳號、案件、上�
 
 ```bash
 pip install -r requirements.txt
-export ANTHROPIC_API_KEY=sk-ant-...           # 或於側邊欄輸入
-export NEWDRUG_KB_DIR=/path/to/新藥審查AI     # 選填，預設用專案內 kb_sample
+
+# AI 供應商擇一即可（也可都不設，直接於側邊欄「AI 模型金鑰設定」輸入）：
+export ANTHROPIC_API_KEY=sk-ant-...           # 使用 Claude
+# 或
+export GEMINI_API_KEY=AIza...                  # 使用 Google Gemini（於 aistudio.google.com 申請）
+
+export NEWDRUG_KB_DIR=/path/to/新藥審查AI      # 選填，預設用專案內 kb_sample
 streamlit run app.py
 ```
+
+側邊欄「🔑 AI 模型金鑰設定」可切換 **Anthropic Claude / Google Gemini**，兩者擇一填金鑰即可生成，
+邏輯在 `modules/ai_engine.py` 的 `call_llm()` 依 `st.session_state["ai_provider"]` 分派。
 
 預設帳號（**上線前務必於「後台管理→使用者管理」修改或刪除**）：
 

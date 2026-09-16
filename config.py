@@ -61,11 +61,23 @@ ROLE_ADMIN = "管理藥師 / 主管"
 ALL_ROLES = (ROLE_USER, ROLE_ADMIN)
 
 # ---------------------------------------------------------------------------
-# 4. AI 模型設定
+# 4. AI 模型設定（支援 Anthropic Claude 或 Google Gemini 擇一使用）
 # ---------------------------------------------------------------------------
 # 建議透過環境變數注入金鑰，勿寫死於程式碼／版本控制中。
+PROVIDER_ANTHROPIC = "anthropic"
+PROVIDER_GEMINI = "gemini"
+ALL_PROVIDERS = (PROVIDER_ANTHROPIC, PROVIDER_GEMINI)
+PROVIDER_LABEL = {
+    PROVIDER_ANTHROPIC: "Anthropic Claude",
+    PROVIDER_GEMINI: "Google Gemini",
+}
+
 ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"
+GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
+
+DEFAULT_PROVIDER = os.environ.get("NEWDRUG_AI_PROVIDER", PROVIDER_ANTHROPIC)
 DEFAULT_MODEL = os.environ.get("NEWDRUG_AI_MODEL", "claude-sonnet-4-5")
+DEFAULT_GEMINI_MODEL = os.environ.get("NEWDRUG_GEMINI_MODEL", "gemini-2.5-flash")
 MAX_TOKENS_PER_TOPIC = 3000
 
 # ---------------------------------------------------------------------------

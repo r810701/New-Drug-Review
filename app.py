@@ -124,12 +124,23 @@ def render_case_selector() -> DrugCase:
     return DrugCase(case_id=case_id or "未命名案件", applicant_department=dept if 'dept' in dir() else "")
 
 
-def render_upload_section(drug_case: DrugCase) -> dict[int, str]:
-    """讓使用者針對每個主題拖拉上傳文獻/貼上 Google 表單連結；回傳彙整後的文字上下文。"""
+def render_upload_section(drug_case: DrugCase) -> tuple[dict[int, str], dict[int, list[Path]]]:
+    """
+    讓使用者針對每個主題拖拉上傳文獻/貼上 Google 表單連結。
+    回傳 (user_context, image_paths_by_topic)：
+      - user_context：PDF/Word/Excel/CSV/文字檔擷取出的內容 + 使用者手動貼的文字/連結
+      - image_paths_by_topic：JPG/PNG 檔案路徑（不做文字擷取，交給 AI 以視覺方式直接辨識）
+    一律以磁碟上『該案件/該主題』資料夾內容為準（不只看這次新選的檔案），
+    避免換頁、重新整理、或按「只重新產生這頁」時，先前上傳的檔案被當作沒上傳過。
+    """
     st.markdown("#### 2️⃣ 針對各主題投餵補充資料（可選）")
-    st.caption("可上傳文獻 PDF、截圖，或直接貼上 Google 表單/雲端連結；AI 會優先參考您提供的資料。")
+    st.caption(
+        "支援 PDF、Word (.docx)、Excel (.xlsx)、CSV、純文字檔、圖片 (JPG/PNG)，"
+        "或直接貼上 Google 表單/雲端連結；AI 會優先參考您提供的資料。"
+    )
     kb = data_loader.load_knowledge_base()
     user_context: dict[int, str] = {}
+    image_paths_by_topic: dict[int, list[Path]] = {}
 
     cols = st.columns(2)
     for topic_no in range(1, config.NUM_TOPICS + 1):
@@ -137,26 +148,29 @@ def render_upload_section(drug_case: DrugCase) -> dict[int, str]:
         title = spec.slide_title_template.split("\n")[0] if spec else f"主題{topic_no}"
         with cols[(topic_no - 1) % 2].expander(f"主題 {topic_no}：{title}"):
             files = st.file_uploader(
-                "上傳檔案（PDF / 圖片）", type=["pdf", "png", "jpg", "jpeg"],
+                "上傳檔案（PDF / Word / Excel / CSV / 圖片）",
+                type=["pdf", "docx", "xlsx", "csv", "txt", "md", "png", "jpg", "jpeg"],
                 accept_multiple_files=True, key=f"upl_{drug_case.slug}_{topic_no}",
             )
             link_text = st.text_area(
                 "或貼上連結/文字（Google 表單彙整、通訊錄、網址等）",
                 key=f"link_{drug_case.slug}_{topic_no}", height=80,
             )
-            saved_paths = []
+
+            target_dir = case_store.uploads_dir(drug_case.slug, topic_no)
             if files:
-                target_dir = case_store.uploads_dir(drug_case.slug, topic_no)
                 for f in files:
-                    p = target_dir / f.name
-                    p.write_bytes(f.getbuffer())
-                    saved_paths.append(p)
+                    (target_dir / f.name).write_bytes(f.getbuffer())
+
+            # 一律重新掃描磁碟上的檔案（含這次新上傳＋先前已存在的），確保不會「上傳過但沒被用到」
+            all_files = sorted(target_dir.glob("*")) if target_dir.exists() else []
+            doc_files = [p for p in all_files if p.suffix.lower() not in utils.IMAGE_EXTS]
+            image_files = [p for p in all_files if p.suffix.lower() in utils.IMAGE_EXTS]
 
             ctx_parts = []
-            for p in saved_paths:
+            for p in doc_files:
                 # 修正：先前這裡只丟檔名給 AI，AI 從未讀過檔案內容，
                 # 導致引用文獻/數據是模型憑訓練知識腦補，與使用者實際上傳的文獻不符。
-                # 現在改成真的解析文字內容一併塞進去。
                 extracted = utils.extract_text_from_upload(p)
                 ctx_parts.append(f"== 使用者上傳檔案：{p.name} ==\n{extracted}")
                 is_note = extracted.startswith("（") and extracted.endswith("）")
@@ -164,13 +178,27 @@ def render_upload_section(drug_case: DrugCase) -> dict[int, str]:
                     st.caption(f"⚠️ {p.name}：{extracted}")
                 else:
                     st.caption(f"✅ 已擷取「{p.name}」文字內容（{len(extracted)} 字元），將提供給 AI 參考")
+
+            for p in image_files:
+                st.caption(f"🖼️ 「{p.name}」將以圖片方式直接提供給 AI 視覺辨識（非文字擷取）")
+            if len(image_files) > config.MAX_IMAGES_PER_TOPIC:
+                st.caption(
+                    f"⚠️ 本主題圖片共 {len(image_files)} 張，超過單次送出上限 "
+                    f"{config.MAX_IMAGES_PER_TOPIC} 張，只有前 {config.MAX_IMAGES_PER_TOPIC} 張會被 AI 看到。"
+                )
+
             if link_text.strip():
                 ctx_parts.append(f"== 使用者補充文字/連結 ==\n{link_text.strip()}")
+
             user_context[topic_no] = "\n\n".join(ctx_parts)
-    return user_context
+            image_paths_by_topic[topic_no] = image_files
+    return user_context, image_paths_by_topic
 
 
-def render_generate_and_edit(drug_case: DrugCase, user_context: dict[int, str]) -> None:
+def render_generate_and_edit(
+    drug_case: DrugCase, user_context: dict[int, str],
+    image_paths_by_topic: dict[int, list[Path]],
+) -> None:
     st.markdown("#### 3️⃣ 產生 / 編輯簡報內容")
     kb = data_loader.load_knowledge_base()
 
@@ -191,7 +219,10 @@ def render_generate_and_edit(drug_case: DrugCase, user_context: dict[int, str]) 
             progress.progress(topic_no / config.NUM_TOPICS, text=f"已完成主題 {topic_no}/{config.NUM_TOPICS}")
 
         try:
-            deck = ai_engine.generate_full_deck(kb, drug_case, user_context, progress_callback=_cb)
+            deck = ai_engine.generate_full_deck(
+                kb, drug_case, user_context, progress_callback=_cb,
+                image_paths_by_topic=image_paths_by_topic,
+            )
             case_store.save_deck(deck)
             st.success("AI 已完成全份簡報初稿，請於下方逐頁校對。")
         except Exception as e:  # noqa: BLE001
@@ -216,7 +247,8 @@ def render_generate_and_edit(drug_case: DrugCase, user_context: dict[int, str]) 
             if gen_col.button("只重新產生這頁", key=f"regen_{topic_no}"):
                 try:
                     content = ai_engine.generate_topic_content(
-                        topic_no, kb_local, drug_case, user_context.get(topic_no, ""), hint
+                        topic_no, kb_local, drug_case, user_context.get(topic_no, ""), hint,
+                        image_paths=image_paths_by_topic.get(topic_no),
                     )
                     deck.topics[topic_no] = content
                     case_store.save_deck(deck)
@@ -243,11 +275,12 @@ def render_generate_and_edit(drug_case: DrugCase, user_context: dict[int, str]) 
     st.markdown("#### 4️⃣ 下載簡報")
     if st.button("📥 產生並下載 .pptx", type="primary"):
         try:
-            image_paths_by_topic = {
-                1: list(case_store.uploads_dir(drug_case.slug, 1).glob("*"))
-            }
+            # 封面圖片只抓主題1資料夾內「真的是圖片」的檔案，避免同資料夾若有人誤傳 PDF/Word
+            # 也被當成封面照片塞進 add_picture() 而噴錯。
+            topic1_files = case_store.uploads_dir(drug_case.slug, 1).glob("*")
+            cover_image_paths = {1: [p for p in topic1_files if p.suffix.lower() in utils.IMAGE_EXTS]}
             out_path = case_store.outputs_dir(drug_case.slug) / f"{drug_case.slug}_新進藥品評估.pptx"
-            ppt_builder.build_deck_pptx(deck, kb_local, out_path, image_paths_by_topic)
+            ppt_builder.build_deck_pptx(deck, kb_local, out_path, cover_image_paths)
             with open(out_path, "rb") as f:
                 st.download_button(
                     "點此下載簡報（下載後仍可用 PowerPoint 手動編修）",
@@ -404,9 +437,9 @@ def main() -> None:
         drug_case = render_case_selector()
         st.session_state["current_case_slug"] = drug_case.slug
         st.divider()
-        user_context = render_upload_section(drug_case)
+        user_context, image_paths_by_topic = render_upload_section(drug_case)
         st.divider()
-        render_generate_and_edit(drug_case, user_context)
+        render_generate_and_edit(drug_case, user_context, image_paths_by_topic)
 
     with tab2:
         slug = st.session_state.get("current_case_slug")

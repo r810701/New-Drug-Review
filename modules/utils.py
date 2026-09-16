@@ -116,43 +116,155 @@ def truncate(text: str, n: int = 60) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 使用者上傳檔案的文字擷取
+# 使用者上傳檔案的文字擷取（支援 PDF / Word / Excel / CSV / 純文字）
 # ---------------------------------------------------------------------------
 # 修正紀錄：原本上傳區塊只把「檔名」丟進 AI 的 Prompt，AI 從未讀過檔案實際內容，
 # 導致引用文獻/數據完全是模型憑訓練知識腦補（例如同一篇知名試驗被套用到不相關主題）。
-# 這裡改成真的解析 PDF/文字檔內容，讓 AI 有真實文獻全文可以引用。
+# 這裡改成真的解析檔案內容，讓 AI 有真實文獻全文可以引用。
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+TEXT_EXTRACTABLE_EXTS = {".pdf", ".txt", ".md", ".docx", ".xlsx", ".csv"}
+
+
+def _extract_pdf_text_full(path: Path) -> str:
+    try:
+        import pypdf
+    except ImportError:
+        return "（系統尚未安裝 pypdf，無法解析此 PDF，請執行 `pip install pypdf`）"
+    try:
+        reader = pypdf.PdfReader(str(path))
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+    except Exception as e:  # noqa: BLE001
+        return f"（PDF 解析失敗：{e}；此檔案內容 AI 無法讀取，請人工確認）"
+
+
+def _extract_docx_text(path: Path) -> str:
+    try:
+        import docx  # python-docx
+    except ImportError:
+        return "（系統尚未安裝 python-docx，無法解析 Word 檔，請執行 `pip install python-docx`）"
+    try:
+        doc = docx.Document(str(path))
+        parts = [p.text for p in doc.paragraphs if p.text.strip()]
+        for table in doc.tables:
+            for row in table.rows:
+                cells_text = " | ".join(c.text.strip() for c in row.cells)
+                if cells_text.strip(" |"):
+                    parts.append(cells_text)
+        return "\n".join(parts)
+    except Exception as e:  # noqa: BLE001
+        return f"（Word 檔解析失敗：{e}；此檔案內容 AI 無法讀取，請人工確認）"
+
+
+def _extract_excel_text(path: Path) -> str:
+    if path.suffix.lower() == ".xls":
+        return "（不支援舊版 .xls 格式，請於 Excel 另存新檔為 .xlsx 後重新上傳）"
+    try:
+        import openpyxl
+    except ImportError:
+        return "（系統尚未安裝 openpyxl，無法解析 Excel 檔）"
+    try:
+        wb = openpyxl.load_workbook(str(path), data_only=True, read_only=True)
+        lines = []
+        for ws in wb.worksheets:
+            lines.append(f"[工作表：{ws.title}]")
+            row_count = 0
+            for row in ws.iter_rows(values_only=True):
+                if any(v is not None and str(v).strip() != "" for v in row):
+                    lines.append(" | ".join("" if v is None else str(v) for v in row))
+                    row_count += 1
+                if row_count > 300:  # 避免超大檔案把 Prompt 塞爆
+                    lines.append("...(此工作表列數過多，已截斷)")
+                    break
+        return "\n".join(lines)
+    except Exception as e:  # noqa: BLE001
+        return f"（Excel 檔解析失敗：{e}；此檔案內容 AI 無法讀取，請人工確認）"
+
+
 def extract_text_from_upload(path: Path, max_chars: int = 8000) -> str:
     """
     嘗試擷取上傳檔案的文字內容，供塞進 AI Prompt 使用。
     回傳值一定是「可以直接顯示給使用者看」的字串（含失敗/不支援時的說明），
     呼叫端不需要再另外判斷是否擷取成功。
+    圖片檔不走這裡——圖片是直接以視覺方式交給 AI（見 encode_image_for_claude /
+    load_image_for_gemini），文字擷取對圖片沒有意義。
     """
     suffix = path.suffix.lower()
 
     if suffix == ".pdf":
-        try:
-            import pypdf
-        except ImportError:
-            return "（系統尚未安裝 pypdf，無法解析此 PDF，請執行 `pip install pypdf`）"
-        try:
-            reader = pypdf.PdfReader(str(path))
-            text = "\n".join(page.extract_text() or "" for page in reader.pages)
-        except Exception as e:  # noqa: BLE001
-            return f"（PDF 解析失敗：{e}；此檔案內容 AI 無法讀取，請人工確認）"
+        text = _extract_pdf_text_full(path)
     elif suffix in (".txt", ".md"):
         text = path.read_text(encoding="utf-8", errors="ignore")
-    elif suffix in (".png", ".jpg", ".jpeg"):
-        return (
-            "（圖片檔案：目前系統不會自動辨識圖片內文字，AI 無法讀取此檔案的實際內容；"
-            "如有關鍵數據，請直接在下方文字欄位手動輸入摘要，否則 AI 只會憑一般知識作答）"
-        )
+    elif suffix == ".docx":
+        text = _extract_docx_text(path)
+    elif suffix in (".xlsx", ".xls"):
+        text = _extract_excel_text(path)
+    elif suffix == ".csv":
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    elif suffix in IMAGE_EXTS:
+        return "（圖片檔案：將以視覺方式直接提供給 AI 辨識，非文字擷取）"
     else:
         return f"（不支援自動擷取 .{suffix.lstrip('.')} 檔案的文字內容，AI 無法讀取此檔案）"
 
+    # 上面幾個分支若本身回傳的是「說明字串」（例如解析失敗訊息），直接原樣回傳，不要再截斷判斷
+    if text.startswith("（") and text.endswith("）"):
+        return text
+
     text = text.strip()
     if not text:
-        return "（此檔案擷取不到文字，可能是掃描影像型 PDF；AI 無法讀取實際內容，" \
+        return "（此檔案擷取不到文字，可能是掃描影像型 PDF 或空白文件；AI 無法讀取實際內容，" \
                "請人工確認或手動輸入摘要，否則 AI 只會憑一般知識作答，可能與本篇文獻不符）"
     if len(text) > max_chars:
         text = text[:max_chars] + f"\n...(內容過長已截斷，原文共 {len(text)} 字元，AI 僅看得到前 {max_chars} 字元)"
     return text
+
+
+# ---------------------------------------------------------------------------
+# 圖片檔案：以視覺（vision）方式直接交給 AI 辨識，而非文字擷取
+# ---------------------------------------------------------------------------
+_MEDIA_TYPE_BY_SUFFIX = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
+}
+
+
+def encode_image_for_claude(path: Path, max_dimension: int = 1568) -> tuple[str, str]:
+    """
+    回傳 (base64字串, media_type)，供 Claude vision API 的 image content block 使用。
+    有裝 Pillow 時會先等比例縮小到長邊 <= max_dimension（Anthropic 官方建議值，
+    超過這個尺寸只會增加費用/延遲，不會提升辨識品質）並轉存為 JPEG 以縮小檔案；
+    沒裝 Pillow 時退回直接讀取原始檔案 bytes（仍可運作，只是可能較大張、較貴）。
+    """
+    import base64
+
+    try:
+        from PIL import Image
+        import io
+
+        img = Image.open(path)
+        img = img.convert("RGB")
+        w, h = img.size
+        scale = min(1.0, max_dimension / max(w, h))
+        if scale < 1.0:
+            img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        return base64.b64encode(buf.getvalue()).decode("ascii"), "image/jpeg"
+    except ImportError:
+        data = path.read_bytes()
+        media_type = _MEDIA_TYPE_BY_SUFFIX.get(path.suffix.lower(), "image/jpeg")
+        return base64.b64encode(data).decode("ascii"), media_type
+
+
+def load_image_for_gemini(path: Path, max_dimension: int = 1568):
+    """回傳 PIL.Image 物件供 Gemini SDK 直接放進 generate_content([...]) 的內容列表；
+    沒裝 Pillow 時回傳 None，呼叫端應略過該張圖片並提示使用者。
+    同樣等比縮小到長邊 <= max_dimension，避免圖片過大浪費 token/費用。"""
+    try:
+        from PIL import Image
+        img = Image.open(path).convert("RGB")
+        w, h = img.size
+        scale = min(1.0, max_dimension / max(w, h))
+        if scale < 1.0:
+            img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))))
+        return img
+    except ImportError:
+        return None

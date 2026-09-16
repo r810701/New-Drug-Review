@@ -23,6 +23,7 @@ from typing import Optional
 import streamlit as st
 
 import config
+from modules import utils
 from modules.schema import Deck, DrugCase, KnowledgeBase, TenGridResult, TopicContent
 from modules.utils import safe_json_loads
 
@@ -247,7 +248,10 @@ def get_current_model(provider: Optional[str] = None) -> str:
     return st.session_state.get("anthropic_model") or config.DEFAULT_MODEL
 
 
-def _call_claude(system_prompt: str, user_prompt: str, model: Optional[str] = None) -> str:
+def _call_claude(
+    system_prompt: str, user_prompt: str, model: Optional[str] = None,
+    image_paths: Optional[list[Path]] = None,
+) -> str:
     if anthropic is None:
         raise RuntimeError("尚未安裝 anthropic SDK，請先 `pip install anthropic`。")
     api_key = st.session_state.get("anthropic_api_key") or os.environ.get(
@@ -259,16 +263,32 @@ def _call_claude(system_prompt: str, user_prompt: str, model: Optional[str] = No
             "或改在下拉選單切換為 Google Gemini。"
         )
     client = anthropic.Anthropic(api_key=api_key)
+
+    if image_paths:
+        content: list[dict] = []
+        for p in image_paths[: config.MAX_IMAGES_PER_TOPIC]:
+            b64, media_type = utils.encode_image_for_claude(p)
+            content.append({
+                "type": "image",
+                "source": {"type": "base64", "media_type": media_type, "data": b64},
+            })
+        content.append({"type": "text", "text": user_prompt})
+    else:
+        content = user_prompt
+
     resp = client.messages.create(
         model=model or get_current_model(config.PROVIDER_ANTHROPIC),
         max_tokens=config.MAX_TOKENS_PER_TOPIC,
         system=system_prompt,
-        messages=[{"role": "user", "content": user_prompt}],
+        messages=[{"role": "user", "content": content}],
     )
     return "".join(block.text for block in resp.content if hasattr(block, "text"))
 
 
-def _call_gemini(system_prompt: str, user_prompt: str, model: Optional[str] = None) -> str:
+def _call_gemini(
+    system_prompt: str, user_prompt: str, model: Optional[str] = None,
+    image_paths: Optional[list[Path]] = None,
+) -> str:
     if genai is None:
         raise RuntimeError("尚未安裝 google-generativeai SDK，請先 `pip install google-generativeai`。")
     api_key = st.session_state.get("gemini_api_key") or os.environ.get(config.GEMINI_API_KEY_ENV)
@@ -288,7 +308,12 @@ def _call_gemini(system_prompt: str, user_prompt: str, model: Optional[str] = No
                 "response_mime_type": "application/json",
             },
         )
-        resp = gen_model.generate_content(user_prompt)
+        contents: list = [user_prompt]
+        for p in (image_paths or [])[: config.MAX_IMAGES_PER_TOPIC]:
+            img = utils.load_image_for_gemini(p)
+            if img is not None:
+                contents.append(img)
+        resp = gen_model.generate_content(contents)
         return resp.text or ""
     except Exception as e:  # noqa: BLE001
         # Google 常在錯誤訊息裡直接告知「請改用哪個型號」，把它原樣往上拋讓使用者看到，
@@ -296,12 +321,16 @@ def _call_gemini(system_prompt: str, user_prompt: str, model: Optional[str] = No
         raise RuntimeError(f"Gemini 模型「{model_name}」呼叫失敗：{e}") from e
 
 
-def call_llm(system_prompt: str, user_prompt: str, model: Optional[str] = None) -> str:
-    """依目前選定的供應商分派呼叫；回傳原始文字（預期是 JSON 字串）。"""
+def call_llm(
+    system_prompt: str, user_prompt: str, model: Optional[str] = None,
+    image_paths: Optional[list[Path]] = None,
+) -> str:
+    """依目前選定的供應商分派呼叫；回傳原始文字（預期是 JSON 字串）。
+    image_paths 有值時，圖片會以視覺方式一併送給模型辨識（非文字擷取）。"""
     provider = get_current_provider()
     if provider == config.PROVIDER_GEMINI:
-        return _call_gemini(system_prompt, user_prompt, model)
-    return _call_claude(system_prompt, user_prompt, model)
+        return _call_gemini(system_prompt, user_prompt, model, image_paths)
+    return _call_claude(system_prompt, user_prompt, model, image_paths)
 
 
 # ---------------------------------------------------------------------------
@@ -313,11 +342,18 @@ def generate_topic_content(
     drug_case: DrugCase,
     user_context: str = "",
     outcome_hint: Optional[str] = None,
+    image_paths: Optional[list[Path]] = None,
 ) -> TopicContent:
     system_prompt = build_system_prompt(kb)
     user_prompt = build_topic_user_prompt(topic_no, kb, drug_case, user_context, outcome_hint)
+    if image_paths:
+        user_prompt += (
+            f"\n\n（本主題另附 {len(image_paths)} 張使用者上傳圖片，"
+            "已一併以視覺方式提供給你，請直接判讀圖片內容並納入分析，"
+            "圖片如果是仿單/文獻截圖，內容一樣受上方『文獻引用鐵律』約束。）"
+        )
 
-    raw = call_llm(system_prompt, user_prompt)
+    raw = call_llm(system_prompt, user_prompt, image_paths=image_paths)
     payload = safe_json_loads(raw) or {"raw_text_fallback": raw}
 
     spec = kb.topic(topic_no)
@@ -379,11 +415,14 @@ def generate_full_deck(
     drug_case: DrugCase,
     user_context_by_topic: dict[int, str],
     progress_callback=None,
+    image_paths_by_topic: Optional[dict[int, list[Path]]] = None,
 ) -> Deck:
+    image_paths_by_topic = image_paths_by_topic or {}
     deck = Deck(drug_case=drug_case)
     for topic_no in range(1, config.NUM_TOPICS + 1):
         content = generate_topic_content(
-            topic_no, kb, drug_case, user_context_by_topic.get(topic_no, "")
+            topic_no, kb, drug_case, user_context_by_topic.get(topic_no, ""),
+            image_paths=image_paths_by_topic.get(topic_no),
         )
         deck.topics[topic_no] = content
         if progress_callback:

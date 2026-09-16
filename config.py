@@ -83,6 +83,8 @@ DEFAULT_MODEL = os.environ.get("NEWDRUG_AI_MODEL", "claude-sonnet-4-5")
 # 使用者可直接在側邊欄「AI 模型金鑰設定」輸入其他型號字串覆蓋，不需改程式碼重新部署。
 DEFAULT_GEMINI_MODEL = os.environ.get("NEWDRUG_GEMINI_MODEL", "gemini-3.6-flash")
 MAX_TOKENS_PER_TOPIC = 3000
+# 每個主題最多送幾張圖片給 AI 視覺辨識（控制費用/延遲；仿單/文獻截圖通常 1-3 張就夠）
+MAX_IMAGES_PER_TOPIC = 4
 
 # ---------------------------------------------------------------------------
 # 5. 十宮格燈號（顏色 / 符號），對應「決策邏輯與規則」的燈號定義

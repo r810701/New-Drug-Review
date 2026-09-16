@@ -188,7 +188,22 @@ def render_upload_section(drug_case: DrugCase) -> tuple[dict[int, str], dict[int
                 )
 
             if link_text.strip():
-                ctx_parts.append(f"== 使用者補充文字/連結 ==\n{link_text.strip()}")
+                urls = utils.extract_urls(link_text)
+                if urls:
+                    for url in urls:
+                        fetched = utils.fetch_url_content(url)
+                        ctx_parts.append(f"== 使用者貼上連結：{url} ==\n{fetched}")
+                        is_note = fetched.startswith("（") and fetched.endswith("）")
+                        if is_note:
+                            st.caption(f"⚠️ 連結擷取失敗：{fetched}")
+                        else:
+                            st.caption(f"✅ 已抓取連結內容（{len(fetched)} 字元），將提供給 AI 參考")
+                    # 連結以外的純文字說明（例如使用者順手寫的備註）也一併保留
+                    non_url_text = utils.strip_urls(link_text)
+                    if non_url_text:
+                        ctx_parts.append(f"== 使用者補充文字 ==\n{non_url_text}")
+                else:
+                    ctx_parts.append(f"== 使用者補充文字 ==\n{link_text.strip()}")
 
             user_context[topic_no] = "\n\n".join(ctx_parts)
             image_paths_by_topic[topic_no] = image_files
@@ -214,20 +229,43 @@ def render_generate_and_edit(
     b1, b2 = st.columns([1, 1])
     if b1.button("🤖 一鍵產生全份簡報（AI）", type="primary", use_container_width=True):
         progress = st.progress(0.0, text="準備中...")
+        status_area = st.empty()
+        failed_topics: list[int] = []
 
         def _cb(topic_no: int, content: TopicContent) -> None:
-            progress.progress(topic_no / config.NUM_TOPICS, text=f"已完成主題 {topic_no}/{config.NUM_TOPICS}")
-
-        try:
-            deck = ai_engine.generate_full_deck(
-                kb, drug_case, user_context, progress_callback=_cb,
-                image_paths_by_topic=image_paths_by_topic,
+            ok = "_generation_error" not in content.payload
+            if not ok:
+                failed_topics.append(topic_no)
+            icon = "✅" if ok else "❌"
+            progress.progress(
+                topic_no / config.NUM_TOPICS,
+                text=f"{icon} 主題 {topic_no}/{config.NUM_TOPICS} 完成" if ok else
+                     f"{icon} 主題 {topic_no}/{config.NUM_TOPICS} 失敗（將繼續產生其他主題）",
             )
-            case_store.save_deck(deck)
-            st.success("AI 已完成全份簡報初稿，請於下方逐頁校對。")
-        except Exception as e:  # noqa: BLE001
-            st.error(f"生成失敗：{e}")
+
+        def _save(d: Deck) -> None:
+            # 修正：原本失敗會讓已成功的主題整批遺失。現在每完成一個主題就立刻存檔，
+            # 就算後面某個主題因為 API 配額/網路問題失敗，前面已成功的內容也不會不見，
+            # 之後只需要對失敗的主題按「只重新產生這頁」，不用整份重打、浪費 API 額度。
+            case_store.save_deck(d)
+
+        deck = ai_engine.generate_full_deck(
+            kb, drug_case, user_context, progress_callback=_cb,
+            image_paths_by_topic=image_paths_by_topic,
+            existing_deck=deck, save_callback=_save,
+        )
         progress.empty()
+
+        if failed_topics:
+            failed_str = "、".join(str(n) for n in failed_topics)
+            status_area.warning(
+                f"⚠️ 已完成 {config.NUM_TOPICS - len(failed_topics)}/{config.NUM_TOPICS} 個主題，"
+                f"主題 {failed_str} 生成失敗（常見原因：API 配額用盡、網路逾時）。"
+                "已成功的主題已經存檔，不需要重打；請展開下方對應主題，"
+                "等一下再按「只重新產生這頁」個別重試即可。"
+            )
+        else:
+            status_area.success("✅ AI 已完成全份簡報初稿，請於下方逐頁校對。")
 
     if b2.button("💾 儲存目前編輯內容", use_container_width=True):
         case_store.save_deck(deck)
@@ -242,7 +280,11 @@ def render_generate_and_edit(
         title = spec.slide_title_template.split("\n")[0] if spec else f"主題{topic_no}"
         content = deck.topics.get(topic_no, TopicContent(topic_no=topic_no, title=title))
 
-        with st.expander(f"📑 主題 {topic_no}：{title}", expanded=False):
+        has_error = "_generation_error" in content.payload
+        status_icon = "❌ " if has_error else ("✅ " if content.is_ai_generated or content.is_human_edited else "")
+        with st.expander(f"📑 {status_icon}主題 {topic_no}：{title}", expanded=has_error):
+            if has_error:
+                st.error(f"上次生成失敗：{content.payload['_generation_error']}")
             gen_col, _ = st.columns([1, 3])
             if gen_col.button("只重新產生這頁", key=f"regen_{topic_no}"):
                 try:

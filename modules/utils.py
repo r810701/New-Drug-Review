@@ -268,3 +268,80 @@ def load_image_for_gemini(path: Path, max_dimension: int = 1568):
         return img
     except ImportError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# 使用者貼的連結：真正抓取內容（修正紀錄：原本只把網址文字塞進 Prompt，
+# AI 透過 API 呼叫本身沒有瀏覽器/上網能力，看到的只是一串文字，並不會知道網頁/表單內容）
+# ---------------------------------------------------------------------------
+_URL_RE = re.compile(r"https?://[^\s\u3000]+")
+_GSHEET_RE = re.compile(r"https://docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]+)")
+
+
+def _to_gsheet_csv_url(url: str) -> Optional[str]:
+    """把 Google 試算表的『編輯畫面網址』轉成可直接下載內容的 CSV 匯出網址。
+    需要該試算表是「知道連結的人皆可檢視」等公開權限，否則抓不到內容（會回 401/403，
+    在 fetch_url_content 裡會被判定為擷取失敗並誠實告知使用者，不會假裝抓到）。"""
+    m = _GSHEET_RE.search(url)
+    if not m:
+        return None
+    sheet_id = m.group(1)
+    gid_match = re.search(r"[?&#]gid=(\d+)", url)
+    gid = gid_match.group(1) if gid_match else "0"
+    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+
+
+def _strip_html(html: str) -> str:
+    html = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html)
+    html = re.sub(r"(?s)<[^>]+>", "\n", html)
+    html = re.sub(r"[ \t]+", " ", html)
+    html = re.sub(r"\n{2,}", "\n", html)
+    return html.strip()
+
+
+def fetch_url_content(url: str, max_chars: int = 6000, timeout: int = 10) -> str:
+    """
+    真正發送請求把連結內容抓回來，回傳可直接顯示給使用者/塞進 Prompt 的文字。
+    失敗（權限不公開、網路不通、逾時...）一律回傳「（...）」開頭的說明字串，
+    絕對不要讓呼叫端誤以為抓到內容。
+    """
+    try:
+        import requests
+    except ImportError:
+        return "（系統尚未安裝 requests，無法抓取連結內容，請執行 `pip install requests`）"
+
+    csv_url = _to_gsheet_csv_url(url)
+    fetch_url = csv_url or url
+    try:
+        resp = requests.get(fetch_url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0"})
+    except requests.exceptions.RequestException as e:
+        return f"（連結抓取失敗：{e}；請確認網址可公開存取，或改用檔案上傳）"
+
+    if resp.status_code != 200:
+        hint = "（Google 試算表需設定為「知道連結的人皆可檢視」才能被系統讀取）" if csv_url else ""
+        return f"（連結回應狀態碼 {resp.status_code}，無法取得內容{hint}；請確認權限或改用檔案上傳）"
+
+    content_type = resp.headers.get("Content-Type", "")
+    if csv_url or "csv" in content_type or "text/plain" in content_type:
+        text = resp.text
+    elif "html" in content_type:
+        text = _strip_html(resp.text)
+    else:
+        text = resp.text
+
+    text = text.strip()
+    if not text:
+        return "（連結內容為空，或該頁面需要登入才能檢視；AI 無法讀取，請改用檔案上傳）"
+    if len(text) > max_chars:
+        text = text[:max_chars] + f"\n...(內容過長已截斷，原文共 {len(text)} 字元)"
+    return text
+
+
+def extract_urls(text: str) -> list[str]:
+    """從使用者貼的文字裡抓出所有網址，逐一 fetch。"""
+    return _URL_RE.findall(text or "")
+
+
+def strip_urls(text: str) -> str:
+    """移除文字中的網址，留下使用者順手寫的備註文字。"""
+    return _URL_RE.sub("", text or "").strip()

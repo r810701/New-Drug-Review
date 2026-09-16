@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -326,10 +328,40 @@ def call_llm(
     image_paths: Optional[list[Path]] = None,
 ) -> str:
     """依目前選定的供應商分派呼叫；回傳原始文字（預期是 JSON 字串）。
-    image_paths 有值時，圖片會以視覺方式一併送給模型辨識（非文字擷取）。"""
-    provider = get_current_provider()
-    if provider == config.PROVIDER_GEMINI:
-        return _call_gemini(system_prompt, user_prompt, model, image_paths)
+    image_paths 有值時，圖片會以視覺方式一併送給模型辨識（非文字擷取）。
+    遇到速率限制（429/quota/rate limit）錯誤時，會依錯誤訊息建議的等待秒數
+    自動重試「一次」，重試仍失敗才把錯誤往外拋給呼叫端處理。"""
+
+    def _do_call() -> str:
+        provider = get_current_provider()
+        if provider == config.PROVIDER_GEMINI:
+            return _call_gemini(system_prompt, user_prompt, model, image_paths)
+        return _call_claude(system_prompt, user_prompt, model, image_paths)
+
+    try:
+        return _do_call()
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)
+        is_rate_limited = any(kw in msg.lower() for kw in ("429", "rate limit", "quota", "overloaded"))
+        if not is_rate_limited:
+            raise
+        delay = _parse_retry_delay_seconds(msg, default=8, cap=30)
+        time.sleep(delay)
+        return _do_call()  # 重試仍失敗就讓例外原樣往外拋，由呼叫端記錄/顯示
+
+
+def _parse_retry_delay_seconds(msg: str, default: int = 8, cap: int = 30) -> float:
+    """從 API 錯誤訊息中解析建議的重試等待秒數（Gemini/Claude 常會附在錯誤訊息裡），
+    解析不到就用預設值；一律限制在 cap 秒內，避免使用者對著轉圈圈的畫面等太久。"""
+    m = re.search(r"retry[- ]?(?:delay)?[^\d]{0,15}?([\d.]+)\s*s", msg, flags=re.IGNORECASE)
+    if not m:
+        m = re.search(r"seconds[\"':\s]+(\d+)", msg, flags=re.IGNORECASE)
+    if m:
+        try:
+            return min(float(m.group(1)), cap)
+        except ValueError:
+            pass
+    return default
     return _call_claude(system_prompt, user_prompt, model, image_paths)
 
 
@@ -416,19 +448,44 @@ def generate_full_deck(
     user_context_by_topic: dict[int, str],
     progress_callback=None,
     image_paths_by_topic: Optional[dict[int, list[Path]]] = None,
+    existing_deck: Optional[Deck] = None,
+    save_callback=None,
 ) -> Deck:
+    """
+    依序產生 10 個主題。
+    修正紀錄：原本任一主題呼叫失敗就整個函式拋例外中止，先前已成功產生的主題
+    會因為從來沒被存檔而全部遺失，遇到 API 配額限制時要整份重打非常浪費。
+    現在改成：單一主題失敗只記錄在該主題（payload 帶 `_generation_error`），
+    不會中斷其他主題的產生；每完成一個主題（不論成功或失敗）就呼叫一次
+    save_callback(deck) 讓呼叫端立即存檔，確保進度不會因為中途失敗而消失。
+    existing_deck 可傳入已有進度的 Deck，只會覆蓋/補齊，不會清空其他既有主題。
+    """
     image_paths_by_topic = image_paths_by_topic or {}
-    deck = Deck(drug_case=drug_case)
+    deck = existing_deck if existing_deck is not None else Deck(drug_case=drug_case)
+    deck.drug_case = drug_case
+
     for topic_no in range(1, config.NUM_TOPICS + 1):
-        content = generate_topic_content(
-            topic_no, kb, drug_case, user_context_by_topic.get(topic_no, ""),
-            image_paths=image_paths_by_topic.get(topic_no),
-        )
+        try:
+            content = generate_topic_content(
+                topic_no, kb, drug_case, user_context_by_topic.get(topic_no, ""),
+                image_paths=image_paths_by_topic.get(topic_no),
+            )
+        except Exception as e:  # noqa: BLE001
+            content = TopicContent(
+                topic_no=topic_no,
+                title=(kb.topic(topic_no).slide_title_template.split("\n")[0] if kb.topic(topic_no) else ""),
+                payload={"_generation_error": str(e)},
+                ai_raw_response=str(e),
+                is_ai_generated=False,
+            )
+
         deck.topics[topic_no] = content
         if progress_callback:
             progress_callback(topic_no, content)
+        if save_callback:
+            save_callback(deck)  # 每個主題完成就存檔一次，失敗不會拖累前面已成功的進度
 
-        if topic_no == config.NUM_TOPICS:
+        if topic_no == config.NUM_TOPICS and "_generation_error" not in content.payload:
             deck.ten_grid = generate_ten_grid(content.payload)
             deck.summary_points = content.payload.get("summary_points", [])
             deck.review_history_note = content.payload.get("review_history_note", "")

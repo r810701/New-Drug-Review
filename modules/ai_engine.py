@@ -226,6 +226,18 @@ def get_current_provider() -> str:
     return st.session_state.get("ai_provider", config.DEFAULT_PROVIDER)
 
 
+def get_current_model(provider: Optional[str] = None) -> str:
+    """
+    目前實際會使用的模型字串：優先讀使用者於側邊欄輸入的覆蓋值，
+    否則退回 config 預設值。Gemini/Claude 型號常常改版，
+    做成可覆蓋是為了型號一失效，使用者不用等改程式碼就能自己換。
+    """
+    provider = provider or get_current_provider()
+    if provider == config.PROVIDER_GEMINI:
+        return st.session_state.get("gemini_model") or config.DEFAULT_GEMINI_MODEL
+    return st.session_state.get("anthropic_model") or config.DEFAULT_MODEL
+
+
 def _call_claude(system_prompt: str, user_prompt: str, model: Optional[str] = None) -> str:
     if anthropic is None:
         raise RuntimeError("尚未安裝 anthropic SDK，請先 `pip install anthropic`。")
@@ -239,7 +251,7 @@ def _call_claude(system_prompt: str, user_prompt: str, model: Optional[str] = No
         )
     client = anthropic.Anthropic(api_key=api_key)
     resp = client.messages.create(
-        model=model or config.DEFAULT_MODEL,
+        model=model or get_current_model(config.PROVIDER_ANTHROPIC),
         max_tokens=config.MAX_TOKENS_PER_TOPIC,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}],
@@ -257,16 +269,22 @@ def _call_gemini(system_prompt: str, user_prompt: str, model: Optional[str] = No
             "或改在下拉選單切換為 Anthropic Claude。"
         )
     genai.configure(api_key=api_key)
-    gen_model = genai.GenerativeModel(
-        model_name=model or config.DEFAULT_GEMINI_MODEL,
-        system_instruction=system_prompt,
-        generation_config={
-            "max_output_tokens": config.MAX_TOKENS_PER_TOPIC,
-            "response_mime_type": "application/json",
-        },
-    )
-    resp = gen_model.generate_content(user_prompt)
-    return resp.text or ""
+    model_name = model or get_current_model(config.PROVIDER_GEMINI)
+    try:
+        gen_model = genai.GenerativeModel(
+            model_name=model_name,
+            system_instruction=system_prompt,
+            generation_config={
+                "max_output_tokens": config.MAX_TOKENS_PER_TOPIC,
+                "response_mime_type": "application/json",
+            },
+        )
+        resp = gen_model.generate_content(user_prompt)
+        return resp.text or ""
+    except Exception as e:  # noqa: BLE001
+        # Google 常在錯誤訊息裡直接告知「請改用哪個型號」，把它原樣往上拋讓使用者看到，
+        # 比包成通用訊息更好判斷是不是又改版了。
+        raise RuntimeError(f"Gemini 模型「{model_name}」呼叫失敗：{e}") from e
 
 
 def call_llm(system_prompt: str, user_prompt: str, model: Optional[str] = None) -> str:

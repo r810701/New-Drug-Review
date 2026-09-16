@@ -63,7 +63,11 @@ def render_sidebar_kb_panel() -> None:
                 help="部署到內網時建議改用環境變數 ANTHROPIC_API_KEY，這裡僅供臨時測試。",
             )
             st.session_state["anthropic_api_key"] = key
-            st.caption(f"使用模型：`{config.DEFAULT_MODEL}`")
+            model = st.text_input(
+                "模型名稱", value=st.session_state.get("anthropic_model", config.DEFAULT_MODEL),
+                help="Anthropic 改版型號時可直接在此覆蓋，不需改程式碼重新部署。",
+            )
+            st.session_state["anthropic_model"] = model
         else:
             key = st.text_input(
                 "Gemini API Key",
@@ -73,7 +77,13 @@ def render_sidebar_kb_panel() -> None:
                 "；部署到內網時建議改用環境變數 GEMINI_API_KEY。",
             )
             st.session_state["gemini_api_key"] = key
-            st.caption(f"使用模型：`{config.DEFAULT_GEMINI_MODEL}`")
+            model = st.text_input(
+                "模型名稱", value=st.session_state.get("gemini_model", config.DEFAULT_GEMINI_MODEL),
+                help="Google 的 Gemini 型號常改版/停用（如 gemini-2.5-flash 已被 gemini-3.6-flash 取代）；"
+                "若又報「no longer available」，把錯誤訊息裡建議的新型號貼到這裡即可，不需改程式碼。",
+            )
+            st.session_state["gemini_model"] = model
+        st.caption(f"目前使用模型：`{model}`")
 
 
 # ---------------------------------------------------------------------------

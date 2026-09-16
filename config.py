@@ -77,7 +77,11 @@ GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
 
 DEFAULT_PROVIDER = os.environ.get("NEWDRUG_AI_PROVIDER", PROVIDER_ANTHROPIC)
 DEFAULT_MODEL = os.environ.get("NEWDRUG_AI_MODEL", "claude-sonnet-4-5")
-DEFAULT_GEMINI_MODEL = os.environ.get("NEWDRUG_GEMINI_MODEL", "gemini-2.5-flash")
+# 2026/6/1 起 gemini-2.0-flash 系列已停用；2026/10/16 起 gemini-2.5-flash 系列亦將停用，
+# 官方建議改用 GA 穩定版 gemini-3.6-flash（見 Gemini API release notes）。
+# 因應 Google 模型改版頻繁，此值僅為「找不到使用者自訂設定時」的退回值，
+# 使用者可直接在側邊欄「AI 模型金鑰設定」輸入其他型號字串覆蓋，不需改程式碼重新部署。
+DEFAULT_GEMINI_MODEL = os.environ.get("NEWDRUG_GEMINI_MODEL", "gemini-3.6-flash")
 MAX_TOKENS_PER_TOPIC = 3000
 
 # ---------------------------------------------------------------------------

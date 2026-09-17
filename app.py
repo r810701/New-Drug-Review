@@ -20,7 +20,7 @@ from pathlib import Path
 import streamlit as st
 
 import config
-from modules import ai_engine, auth, case_store, data_loader, ppt_builder, utils
+from modules import ai_engine, auth, case_store, data_loader, ppt_builder, ui_widgets, utils
 from modules.schema import Deck, DrugCase, TopicContent
 from modules.utils import truncate
 
@@ -228,7 +228,11 @@ def render_generate_and_edit(
 
     b1, b2 = st.columns([1, 1])
     if b1.button("🤖 一鍵產生全份簡報（AI）", type="primary", use_container_width=True):
-        progress = st.progress(0.0, text="準備中...")
+        dog_placeholder = st.empty()
+        dog_placeholder.markdown(
+            ui_widgets.dog_digging_progress(0, f"已完成 0/{config.NUM_TOPICS} 主題"),
+            unsafe_allow_html=True,
+        )
         status_area = st.empty()
         failed_topics: list[int] = []
 
@@ -236,11 +240,13 @@ def render_generate_and_edit(
             ok = "_generation_error" not in content.payload
             if not ok:
                 failed_topics.append(topic_no)
-            icon = "✅" if ok else "❌"
-            progress.progress(
-                topic_no / config.NUM_TOPICS,
-                text=f"{icon} 主題 {topic_no}/{config.NUM_TOPICS} 完成" if ok else
-                     f"{icon} 主題 {topic_no}/{config.NUM_TOPICS} 失敗（將繼續產生其他主題）",
+            label = (
+                f"{'✅' if ok else '❌'} 已完成 {topic_no}/{config.NUM_TOPICS} 主題"
+                + ("（有主題失敗，將繼續產生其他主題）" if failed_topics else "")
+            )
+            dog_placeholder.markdown(
+                ui_widgets.dog_digging_progress(topic_no / config.NUM_TOPICS * 100, label),
+                unsafe_allow_html=True,
             )
 
         def _save(d: Deck) -> None:
@@ -254,7 +260,8 @@ def render_generate_and_edit(
             image_paths_by_topic=image_paths_by_topic,
             existing_deck=deck, save_callback=_save,
         )
-        progress.empty()
+        # 完成畫面（叼骨頭搖尾巴）留著不清掉，讓使用者看到「做完了」的回饋，
+        # 不像原本進度條會直接消失、有點沒頭沒尾的感覺。
 
         if failed_topics:
             failed_str = "、".join(str(n) for n in failed_topics)
@@ -287,6 +294,11 @@ def render_generate_and_edit(
                 st.error(f"上次生成失敗：{content.payload['_generation_error']}")
             gen_col, _ = st.columns([1, 3])
             if gen_col.button("只重新產生這頁", key=f"regen_{topic_no}"):
+                seedtree_placeholder = st.empty()
+                seedtree_placeholder.markdown(
+                    ui_widgets.seed_tree_indicator(f"AI 讀取主題 {topic_no} 資料中..."),
+                    unsafe_allow_html=True,
+                )
                 try:
                     content = ai_engine.generate_topic_content(
                         topic_no, kb_local, drug_case, user_context.get(topic_no, ""), hint,
@@ -294,8 +306,10 @@ def render_generate_and_edit(
                     )
                     deck.topics[topic_no] = content
                     case_store.save_deck(deck)
+                    seedtree_placeholder.empty()
                     st.success("已重新產生，請確認下方內容。")
                 except Exception as e:  # noqa: BLE001
+                    seedtree_placeholder.empty()
                     st.error(f"生成失敗：{e}")
 
             edited_json = st.text_area(

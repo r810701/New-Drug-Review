@@ -434,7 +434,7 @@ def render_generate_and_edit(
                         )
                         content.reviewer_note = old_note
                         deck.topics[topic_no] = content
-                      if topic_no == config.NUM_TOPICS and "_generation_error" not in content.payload:
+                        if topic_no == config.NUM_TOPICS and "_generation_error" not in content.payload:
                             deck.ten_grid = ai_engine.generate_ten_grid(content.payload)
                             deck.summary_points = content.payload.get("summary_points", [])
                             deck.review_history_note = content.payload.get("review_history_note", "")

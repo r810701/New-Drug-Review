@@ -434,6 +434,12 @@ def render_generate_and_edit(
                         )
                         content.reviewer_note = old_note
                         deck.topics[topic_no] = content
+                      if topic_no == config.NUM_TOPICS and "_generation_error" not in content.payload:
+                            deck.ten_grid = ai_engine.generate_ten_grid(content.payload)
+                            deck.summary_points = content.payload.get("summary_points", [])
+                            deck.review_history_note = content.payload.get("review_history_note", "")
+                            ai_reco = content.payload.get("final_recommendation")
+                            deck.final_recommendation = ai_reco or ai_engine.compute_recommendation(deck.ten_grid)
                         case_store.save_deck(deck)
                         seedtree_placeholder.empty()
                         st.success("已重新產生，請確認下方內容。")

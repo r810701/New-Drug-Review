@@ -20,7 +20,7 @@ from pathlib import Path
 import streamlit as st
 
 import config
-from modules import ai_engine, auth, case_store, data_loader, ppt_builder, ui_widgets, utils
+from modules import ai_engine, auth, case_store, data_loader, ppt_builder, topic_ui, ui_widgets, utils
 from modules.schema import Deck, DrugCase, TopicContent
 from modules.utils import truncate
 
@@ -299,11 +299,13 @@ def render_generate_and_edit(
                     ui_widgets.seed_tree_indicator(f"AI 讀取主題 {topic_no} 資料中..."),
                     unsafe_allow_html=True,
                 )
+                old_note = content.reviewer_note  # 重新產生不該把藥師之前寫的審查備註洗掉
                 try:
                     content = ai_engine.generate_topic_content(
                         topic_no, kb_local, drug_case, user_context.get(topic_no, ""), hint,
                         image_paths=image_paths_by_topic.get(topic_no),
                     )
+                    content.reviewer_note = old_note
                     deck.topics[topic_no] = content
                     case_store.save_deck(deck)
                     seedtree_placeholder.empty()
@@ -312,21 +314,53 @@ def render_generate_and_edit(
                     seedtree_placeholder.empty()
                     st.error(f"生成失敗：{e}")
 
-            edited_json = st.text_area(
-                "內容（JSON，可直接編輯後按下方『套用編輯』）",
-                value=_pretty_json(content.payload), height=220, key=f"json_{topic_no}",
+            # ---- 1. 視覺化投影片預覽卡片 ----
+            st.markdown(
+                topic_ui.render_slide_preview_html(topic_no, content.title or title, content.payload),
+                unsafe_allow_html=True,
             )
-            if st.button("套用編輯", key=f"apply_{topic_no}"):
-                import json as _json
-                try:
-                    content.payload = _json.loads(edited_json)
-                    content.is_human_edited = True
-                    content.last_edited_by = getattr(auth.current_user(), "display_name", "")
-                    deck.topics[topic_no] = content
-                    case_store.save_deck(deck)
-                    st.success("已套用並儲存。")
-                except Exception as e:  # noqa: BLE001
-                    st.error(f"JSON 格式錯誤：{e}")
+
+            # ---- 2. 人性化表單編輯（不碰 JSON/大括號） ----
+            with st.form(key=f"edit_form_{topic_no}"):
+                st.markdown("##### ✏️ 簡易編輯模式")
+                new_title = st.text_input("投影片標題", value=content.title or title, key=f"title_{topic_no}")
+                new_payload = topic_ui.render_editable_form(
+                    topic_no, content.payload, key_prefix=f"field_{topic_no}"
+                )
+                new_note = st.text_area(
+                    "🗒️ 審查備註（僅供內部工作紀錄，不會出現在簡報上；重新產生此頁時會保留）",
+                    value=content.reviewer_note, key=f"note_{topic_no}", height=70,
+                )
+                applied = st.form_submit_button("✅ 套用修改", type="primary")
+
+            if applied:
+                content.title = new_title
+                content.payload = new_payload
+                content.reviewer_note = new_note
+                content.is_human_edited = True
+                content.last_edited_by = getattr(auth.current_user(), "display_name", "")
+                deck.topics[topic_no] = content
+                case_store.save_deck(deck)
+                st.success("已套用修改並儲存，上方預覽卡片已同步更新。")
+                st.rerun()
+
+            with st.expander("🛠️ 進階：原始 JSON（複雜的巢狀內容，或想整段貼上/複製時使用）"):
+                edited_json = st.text_area(
+                    "內容（JSON）", value=_pretty_json(content.payload),
+                    height=220, key=f"json_{topic_no}",
+                )
+                if st.button("套用 JSON", key=f"apply_json_{topic_no}"):
+                    import json as _json
+                    try:
+                        content.payload = _json.loads(edited_json)
+                        content.is_human_edited = True
+                        content.last_edited_by = getattr(auth.current_user(), "display_name", "")
+                        deck.topics[topic_no] = content
+                        case_store.save_deck(deck)
+                        st.success("已套用並儲存。")
+                        st.rerun()
+                    except Exception as e:  # noqa: BLE001
+                        st.error(f"JSON 格式錯誤：{e}")
 
     st.markdown("#### 4️⃣ 下載簡報")
     if st.button("📥 產生並下載 .pptx", type="primary"):

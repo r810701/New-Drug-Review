@@ -123,6 +123,9 @@ class TopicContent:
     is_human_edited: bool = False
     last_edited_by: str = ""
     last_edited_at: Optional[datetime] = None
+    # 藥師審查時留的備註/待確認事項；純內部工作紀錄，不會出現在最終 pptx 投影片上，
+    # 也不會因為「只重新產生這頁」被 AI 蓋掉（regen 時會沿用舊值）。
+    reviewer_note: str = ""
 
 
 @dataclass

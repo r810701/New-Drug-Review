@@ -68,6 +68,7 @@ def save_deck(deck: Deck) -> None:
                 "is_ai_generated": tc.is_ai_generated,
                 "is_human_edited": tc.is_human_edited,
                 "last_edited_by": tc.last_edited_by,
+                "reviewer_note": tc.reviewer_note,
             }
             for no, tc in deck.topics.items()
         },
@@ -95,6 +96,7 @@ def load_deck(slug: str) -> Deck | None:
                 is_ai_generated=t.get("is_ai_generated", False),
                 is_human_edited=t.get("is_human_edited", False),
                 last_edited_by=t.get("last_edited_by", ""),
+                reviewer_note=t.get("reviewer_note", ""),
             )
     return deck
 

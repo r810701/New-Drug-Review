@@ -170,3 +170,4 @@ TOPIC9_DEFAULT_COLUMN_MAP = {
     "physician_opinion": "醫師意見",  # 選填；表單沒有這欄就會用下面的固定套語
 }
 TOPIC9_DEFAULT_PHYSICIAN_OPINION = "為提申請之科別，不另行詢問。"
+TOPIC9_DEFAULT_PHYSICIAN_OPINION = "請在此輸入預設的醫師意見文字"

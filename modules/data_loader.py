@@ -262,3 +262,44 @@ def kb_status_summary(kb: KnowledgeBase) -> str:
         f"語句範例 {n_examples} 則、決策規則 {n_rules} 條、"
         f"主題架構 {n_topics} 項（指紋碼：{kb.fingerprint}）"
     )
+
+
+def kb_file_diagnostics(kb_dir: Path = config.KB_DIR) -> list[dict]:
+    """
+    列出【新藥審查AI】資料夾內每個關鍵檔案的「實際解析路徑、最後修改時間、檔案大小」。
+    用途：當管理藥師覺得「明明改了 Excel，按了載入最新資料庫，內容卻還是舊的」，
+    十之八九是編輯到了別份檔案（沒有真的存到 App 實際讀取的這個路徑）。
+    這個列表讓人一眼就能比對「最後修改時間」跟自己剛剛存檔的時間對不對得上，
+    不需要用猜的，也不用檔案指紋碼這種不好肉眼判讀的東西。
+    """
+    import datetime as _dt
+
+    targets = [
+        ("Excel 規則檔", kb_dir / config.EXCEL_MODULE_FILENAME),
+        ("母片", kb_dir / config.MASTER_PPTX_FILENAME),
+        ("語句範例文字檔", kb_dir / config.EXAMPLE_TEXT_FILENAME),
+    ]
+    rows = []
+    for label, path in targets:
+        if path.exists():
+            stat = path.stat()
+            rows.append({
+                "項目": label,
+                "實際讀取路徑": str(path.resolve()),
+                "最後修改時間": _dt.datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                "檔案大小": f"{stat.st_size / 1024:.1f} KB",
+            })
+        else:
+            rows.append({
+                "項目": label, "實際讀取路徑": str(path.resolve()),
+                "最後修改時間": "⚠️ 檔案不存在", "檔案大小": "-",
+            })
+    for pdf_path in sorted(kb_dir.glob(config.EXAMPLE_SLIDE_GLOB_PDF)):
+        stat = pdf_path.stat()
+        rows.append({
+            "項目": f"範例PDF：{pdf_path.name}",
+            "實際讀取路徑": str(pdf_path.resolve()),
+            "最後修改時間": _dt.datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+            "檔案大小": f"{stat.st_size / 1024:.1f} KB",
+        })
+    return rows

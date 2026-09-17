@@ -20,7 +20,10 @@ from pathlib import Path
 import streamlit as st
 
 import config
-from modules import ai_engine, auth, case_store, data_loader, ppt_builder, topic_ui, ui_widgets, utils
+from modules import (
+    ai_engine, auth, case_store, data_loader, ppt_builder, structured_data,
+    topic_ui, ui_widgets, utils,
+)
 from modules.schema import Deck, DrugCase, TopicContent
 from modules.utils import truncate
 
@@ -40,6 +43,17 @@ def render_sidebar_kb_panel() -> None:
             with st.spinner("正在清除快取並重新掃描【新藥審查AI】資料夾..."):
                 kb = data_loader.force_refresh_knowledge_base()
             st.success(data_loader.kb_status_summary(kb))
+        with st.expander("🩺 檔案診斷（規則數對不上時請看這裡）"):
+            st.caption(
+                "如果按了上面的按鈕，規則/範例數量還是沒變，"
+                "十之八九是您編輯的檔案跟這裡列的『實際讀取路徑』不是同一份——"
+                "請比對下面的『最後修改時間』跟您剛剛存檔的時間對不對得上。"
+            )
+            for row in data_loader.kb_file_diagnostics():
+                st.markdown(
+                    f"**{row['項目']}**　最後修改：{row['最後修改時間']}　"
+                    f"（{row['檔案大小']}）\n\n`{row['實際讀取路徑']}`"
+                )
     else:
         st.caption("（僅管理藥師/主管可手動重新整理資料庫）")
 
@@ -210,6 +224,107 @@ def render_upload_section(drug_case: DrugCase) -> tuple[dict[int, str], dict[int
     return user_context, image_paths_by_topic
 
 
+def _render_structured_import_block(
+    topic_no: int, drug_case: DrugCase, deck: Deck, content: TopicContent, kb_local,
+) -> None:
+    """
+    主題 1/2/9 專用：完全不呼叫 LLM 的結構化資料匯入 UI。
+    取代原本「只重新產生這頁」的 AI 按鈕，改成「貼網址/套用案件資料 → 匯入」，
+    0 token 消耗，且保證逐字不改（尤其主題9的 Google 表單臨床意見）。
+    """
+    if topic_no == 1:
+        st.caption("封面內容直接沿用建立案件時填寫的英文/中文商品名，不需要、也不會呼叫 AI。")
+        if st.button("📥 套用案件資料（0 Token）", key="import_topic1"):
+            new_content = TopicContent(
+                topic_no=1, title=content.title, reviewer_note=content.reviewer_note,
+                payload=structured_data.build_topic1_payload(drug_case),
+                is_ai_generated=False, is_human_edited=False,
+            )
+            deck.topics[1] = new_content
+            case_store.save_deck(deck)
+            st.success("已套用案件資料。")
+            st.rerun()
+        return
+
+    # 主題2、9 共用：Google 試算表/表單網址 + 篩選 + 欄位對應，設定會存起來下次不用重填
+    saved_cfg = case_store.load_structured_source(drug_case.slug, topic_no)
+    default_map = config.TOPIC2_DEFAULT_COLUMN_MAP if topic_no == 2 else config.TOPIC9_DEFAULT_COLUMN_MAP
+    source_label = "廠商/醫師填寫的新進藥品申請表" if topic_no == 2 else "各院區藥師填寫的臨床意見 Google 表單"
+
+    st.caption(
+        f"資料來源：{source_label}（Google 試算表連結）。系統會逐欄對應寫入，"
+        "**完全不經過 AI 改寫**，原文長怎樣就長怎樣。"
+    )
+    sheet_url = st.text_input(
+        "Google 試算表網址", value=saved_cfg.get("sheet_url", ""), key=f"struct_url_{topic_no}",
+        help="需設定「知道連結的人皆可檢視」權限，系統才抓得到內容。",
+    )
+    fcol1, fcol2 = st.columns(2)
+    filter_col = fcol1.text_input(
+        "篩選欄位（選填，共用表單時用來只抓這個案件的列）",
+        value=saved_cfg.get("filter_col", ""), key=f"struct_fcol_{topic_no}",
+        placeholder="例如：藥品學名",
+    )
+    filter_val = fcol2.text_input(
+        "篩選值", value=saved_cfg.get("filter_val", drug_case.generic_name if topic_no == 9 else ""),
+        key=f"struct_fval_{topic_no}", placeholder="例如：Deucravacitinib",
+    )
+
+    with st.expander("⚙️ 欄位對應設定（表單欄位名稱跟預設猜測不一樣時，在這裡改）"):
+        column_map = {}
+        for field_key, default_col in default_map.items():
+            column_map[field_key] = st.text_input(
+                topic_ui.humanize_key(field_key),
+                value=saved_cfg.get("column_map", {}).get(field_key, default_col),
+                key=f"struct_col_{topic_no}_{field_key}",
+            )
+
+    btn_col1, btn_col2 = st.columns(2)
+    preview_clicked = btn_col1.button("🔍 預覽偵測到的資料", key=f"struct_preview_{topic_no}")
+    import_clicked = btn_col2.button("📥 匯入（0 Token）", key=f"struct_import_{topic_no}", type="primary")
+
+    if preview_clicked or import_clicked:
+        case_store.save_structured_source(
+            drug_case.slug, topic_no,
+            {"sheet_url": sheet_url, "filter_col": filter_col, "filter_val": filter_val, "column_map": column_map},
+        )
+        if not sheet_url.strip():
+            st.warning("請先貼上 Google 試算表網址。")
+        else:
+            fetched = utils.fetch_url_content(sheet_url, max_chars=40000)
+            if fetched.startswith("（") and fetched.endswith("）"):
+                st.error(f"抓取失敗：{fetched}")
+            else:
+                rows = structured_data.parse_csv_text(fetched)
+                filtered = structured_data.filter_rows(rows, filter_col, filter_val)
+                detected_cols = structured_data.detect_columns(rows)
+
+                if preview_clicked:
+                    st.info(f"偵測到欄位：{'、'.join(detected_cols) if detected_cols else '（無）'}")
+                    st.write(f"篩選前共 {len(rows)} 列，篩選後 {len(filtered)} 列：")
+                    st.dataframe(filtered[:20], use_container_width=True)
+
+                if import_clicked:
+                    if not filtered:
+                        st.warning("篩選後沒有任何資料列，請確認篩選欄位/篩選值是否正確，或先按「預覽」核對。")
+                    else:
+                        if topic_no == 2:
+                            new_payload = structured_data.build_topic2_payload(filtered[0], column_map)
+                        else:
+                            topic2_payload = deck.topics.get(2).payload if deck.topics.get(2) else None
+                            new_payload = structured_data.build_topic9_payload(
+                                filtered, column_map, drug_case=drug_case, topic2_payload=topic2_payload,
+                            )
+                        new_content = TopicContent(
+                            topic_no=topic_no, title=content.title, reviewer_note=content.reviewer_note,
+                            payload=new_payload, is_ai_generated=False, is_human_edited=False,
+                        )
+                        deck.topics[topic_no] = new_content
+                        case_store.save_deck(deck)
+                        st.success(f"已匯入 {len(filtered)} 列資料，內容逐字保留、未經 AI 改寫。")
+                        st.rerun()
+
+
 def render_generate_and_edit(
     drug_case: DrugCase, user_context: dict[int, str],
     image_paths_by_topic: dict[int, list[Path]],
@@ -226,26 +341,31 @@ def render_generate_and_edit(
     )
     hint = None if outcome_hint == "自動判斷" else outcome_hint
 
+    ai_topic_total = config.NUM_TOPICS - len(config.SKIP_LLM_TOPICS)  # 目前是 7（1/2/9 走結構化匯入）
+
     b1, b2 = st.columns([1, 1])
-    if b1.button("🤖 一鍵產生全份簡報（AI）", type="primary", use_container_width=True):
+    if b1.button(f"🤖 一鍵產生 AI 主題（{ai_topic_total} 題，主題1/2/9 不耗用額度）",
+                 type="primary", use_container_width=True):
         dog_placeholder = st.empty()
         dog_placeholder.markdown(
-            ui_widgets.dog_digging_progress(0, f"已完成 0/{config.NUM_TOPICS} 主題"),
+            ui_widgets.dog_digging_progress(0, f"已完成 0/{ai_topic_total} 個 AI 主題"),
             unsafe_allow_html=True,
         )
         status_area = st.empty()
         failed_topics: list[int] = []
+        done_count = {"n": 0}
 
         def _cb(topic_no: int, content: TopicContent) -> None:
             ok = "_generation_error" not in content.payload
+            done_count["n"] += 1
             if not ok:
                 failed_topics.append(topic_no)
             label = (
-                f"{'✅' if ok else '❌'} 已完成 {topic_no}/{config.NUM_TOPICS} 主題"
+                f"{'✅' if ok else '❌'} 已完成 {done_count['n']}/{ai_topic_total} 個 AI 主題（主題 {topic_no}）"
                 + ("（有主題失敗，將繼續產生其他主題）" if failed_topics else "")
             )
             dog_placeholder.markdown(
-                ui_widgets.dog_digging_progress(topic_no / config.NUM_TOPICS * 100, label),
+                ui_widgets.dog_digging_progress(done_count["n"] / ai_topic_total * 100, label),
                 unsafe_allow_html=True,
             )
 
@@ -266,13 +386,16 @@ def render_generate_and_edit(
         if failed_topics:
             failed_str = "、".join(str(n) for n in failed_topics)
             status_area.warning(
-                f"⚠️ 已完成 {config.NUM_TOPICS - len(failed_topics)}/{config.NUM_TOPICS} 個主題，"
+                f"⚠️ 已完成 {ai_topic_total - len(failed_topics)}/{ai_topic_total} 個 AI 主題，"
                 f"主題 {failed_str} 生成失敗（常見原因：API 配額用盡、網路逾時）。"
                 "已成功的主題已經存檔，不需要重打；請展開下方對應主題，"
                 "等一下再按「只重新產生這頁」個別重試即可。"
             )
         else:
-            status_area.success("✅ AI 已完成全份簡報初稿，請於下方逐頁校對。")
+            status_area.success(
+                f"✅ {ai_topic_total} 個 AI 主題已完成初稿，請於下方逐頁校對。"
+                "（主題1/2/9 請往下用「結構化匯入」，不需要也不會耗用 AI 額度）"
+            )
 
     if b2.button("💾 儲存目前編輯內容", use_container_width=True):
         case_store.save_deck(deck)
@@ -292,27 +415,31 @@ def render_generate_and_edit(
         with st.expander(f"📑 {status_icon}主題 {topic_no}：{title}", expanded=has_error):
             if has_error:
                 st.error(f"上次生成失敗：{content.payload['_generation_error']}")
-            gen_col, _ = st.columns([1, 3])
-            if gen_col.button("只重新產生這頁", key=f"regen_{topic_no}"):
-                seedtree_placeholder = st.empty()
-                seedtree_placeholder.markdown(
-                    ui_widgets.seed_tree_indicator(f"AI 讀取主題 {topic_no} 資料中..."),
-                    unsafe_allow_html=True,
-                )
-                old_note = content.reviewer_note  # 重新產生不該把藥師之前寫的審查備註洗掉
-                try:
-                    content = ai_engine.generate_topic_content(
-                        topic_no, kb_local, drug_case, user_context.get(topic_no, ""), hint,
-                        image_paths=image_paths_by_topic.get(topic_no),
+            if topic_no in config.SKIP_LLM_TOPICS:
+                _render_structured_import_block(topic_no, drug_case, deck, content, kb_local)
+                content = deck.topics.get(topic_no, content)  # 匯入按鈕可能已更新 deck，重新取最新內容
+            else:
+                gen_col, _ = st.columns([1, 3])
+                if gen_col.button("只重新產生這頁", key=f"regen_{topic_no}"):
+                    seedtree_placeholder = st.empty()
+                    seedtree_placeholder.markdown(
+                        ui_widgets.seed_tree_indicator(f"AI 讀取主題 {topic_no} 資料中..."),
+                        unsafe_allow_html=True,
                     )
-                    content.reviewer_note = old_note
-                    deck.topics[topic_no] = content
-                    case_store.save_deck(deck)
-                    seedtree_placeholder.empty()
-                    st.success("已重新產生，請確認下方內容。")
-                except Exception as e:  # noqa: BLE001
-                    seedtree_placeholder.empty()
-                    st.error(f"生成失敗：{e}")
+                    old_note = content.reviewer_note  # 重新產生不該把藥師之前寫的審查備註洗掉
+                    try:
+                        content = ai_engine.generate_topic_content(
+                            topic_no, kb_local, drug_case, user_context.get(topic_no, ""), hint,
+                            image_paths=image_paths_by_topic.get(topic_no),
+                        )
+                        content.reviewer_note = old_note
+                        deck.topics[topic_no] = content
+                        case_store.save_deck(deck)
+                        seedtree_placeholder.empty()
+                        st.success("已重新產生，請確認下方內容。")
+                    except Exception as e:  # noqa: BLE001
+                        seedtree_placeholder.empty()
+                        st.error(f"生成失敗：{e}")
 
             # ---- 1. 視覺化投影片預覽卡片 ----
             st.markdown(

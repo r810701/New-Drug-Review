@@ -109,3 +109,26 @@ def uploads_dir(slug: str, topic_no: int) -> Path:
 
 def outputs_dir(slug: str) -> Path:
     return _case_dir(slug) / config.OUTPUT_DIRNAME
+
+
+# ---------------------------------------------------------------------------
+# 結構化匯入設定（主題2/9 的表單網址、篩選條件、欄位對應）
+# 存起來是為了避免藥師每次都要重新輸入一模一樣的網址跟欄位對應設定。
+# ---------------------------------------------------------------------------
+def _structured_config_path(slug: str) -> Path:
+    return _case_dir(slug) / "structured_sources.json"
+
+
+def save_structured_source(slug: str, topic_no: int, cfg: dict) -> None:
+    path = _structured_config_path(slug)
+    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    data[str(topic_no)] = cfg
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_structured_source(slug: str, topic_no: int) -> dict:
+    path = _structured_config_path(slug)
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return data.get(str(topic_no), {})

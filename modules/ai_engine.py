@@ -465,6 +465,11 @@ def generate_full_deck(
     deck.drug_case = drug_case
 
     for topic_no in range(1, config.NUM_TOPICS + 1):
+        if topic_no in config.SKIP_LLM_TOPICS:
+            # 主題1/2/9 不耗用 AI 額度，走結構化匯入（見 modules/structured_data.py），
+            # 這裡直接跳過、保留 existing_deck 裡原本的內容（不論是結構化匯入的結果，
+            # 還是還沒填的空白），絕對不會被 LLM 覆蓋。
+            continue
         try:
             content = generate_topic_content(
                 topic_no, kb, drug_case, user_context_by_topic.get(topic_no, ""),

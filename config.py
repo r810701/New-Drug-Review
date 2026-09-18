@@ -171,3 +171,15 @@ TOPIC9_DEFAULT_COLUMN_MAP = {
 }
 TOPIC9_DEFAULT_PHYSICIAN_OPINION = "為提申請之科別，不另行詢問。"
 TOPIC9_DEFAULT_PHYSICIAN_OPINION = "請在此輸入預設的醫師意見文字"
+# ---------------------------------------------------------------------------
+# 8. 主題7「醫療科技評估(HTA)」PDF關鍵字智慧擷取
+# ---------------------------------------------------------------------------
+# 文件可能長達10~200頁，與其死板地只送前 max_chars 字元（真正的給付決策
+# 段落很可能不在文件開頭），改成優先擷取包含以下關鍵字的段落，
+# 字元上限不變，但能抓到真正跟決策相關的內容，而非文件開頭的背景/方法學章節。
+TOPIC7_HTA_KEYWORDS = [
+    "NICE", "PBAC", "CADTH", "CDE", "HTA",
+    "health technology assessment", "reimbursement", "recommend",
+    "committee decision", "appraisal", "final decision",
+    "核准給付", "不予給付", "拒絕給付", "有條件給付", "藥物給付項目及支付標準",
+]

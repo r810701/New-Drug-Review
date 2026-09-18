@@ -365,7 +365,7 @@ def render_generate_and_edit(
                 + ("（有主題失敗，將繼續產生其他主題）" if failed_topics else "")
             )
             dog_placeholder.markdown(
-                ui_widgets.dog_digging_progress(done_count["n"] / ai_topic_total * 100, label),
+                ui_widgets.dog_digging_progress(topic_no / config.NUM_TOPICS * 100, label),
                 unsafe_allow_html=True,
             )
 

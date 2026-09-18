@@ -361,7 +361,7 @@ def render_generate_and_edit(
             if not ok:
                 failed_topics.append(topic_no)
             label = (
-                f"{'✅' if ok else '❌'} 已完成 {done_count['n']}/{ai_topic_total} 個 AI 主題（主題 {topic_no}）"
+                f"{'✅' if ok else '❌'} 已完成主題 {topic_no}/{config.NUM_TOPICS}"
                 + ("（有主題失敗，將繼續產生其他主題）" if failed_topics else "")
             )
             dog_placeholder.markdown(

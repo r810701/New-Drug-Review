@@ -18,7 +18,7 @@ modules/ui_widgets.py
   1. seed_tree_indicator()：取代掉「AI 讀取單一主題資料」時預設呆板的轉圈圈，
      用於單一主題「只重新產生這頁」按鈕觸發後的等待畫面。
   2. dog_digging_progress()：取代「一鍵產生全份簡報」原本的純數字進度條，
-     0~99% 是小狗挖土動畫＋進度條，100% 換成叼骨頭搖尾巴的完成畫面。
+     小狗在草地上隨進度往右移動並刨土，走到終點後叼骨頭搖尾巴慶祝完成。
 """
 from __future__ import annotations
 
@@ -71,19 +71,22 @@ def seed_tree_indicator(label: str = "AI 讀取資料中...") -> str:
 def dog_digging_progress(percent: float, status_text: str = "") -> str:
     """
     percent: 0~100。
-    < 100：小狗蹲在草地土堆上輕輕刨土，泥屑不斷往後飛濺，下方是填色進度條。
-    >= 100：小狗叼著一根大骨頭，開心搖尾巴，進度條變成完成色。
-    status_text：進度條下方的文字說明（例如「已完成 6/10 主題」）。
+    < 100：小狗蹲在草地土堆上輕輕刨土，並隨進度在草地上往右移動，泥屑不斷往後飛濺。
+    >= 100：小狗走到草地最右側，叼著一根大骨頭，開心搖尾巴。
+    status_text：下方的文字說明（例如「已完成主題 4/10」）。
+    不顯示額外的數字進度條——狗狗在草地上的位置本身就是進度指示。
     """
     percent = max(0.0, min(100.0, percent))
     done = percent >= 100
+
+    track_start, track_end = 9.0, 87.0
+    dog_left = track_end if done else track_start + (track_end - track_start) * (percent / 100.0)
 
     if done:
         scene = """<div class="ndaw-dog-body"></div>
 <div class="ndaw-dog-emoji ndaw-dog-happy">🐶</div>
 <div class="ndaw-bone">🦴</div>""".strip()
         status_text = status_text or "🎉 全部完成！"
-        bar_class = "ndaw-bar-fill ndaw-bar-done"
     else:
         dirt_particles = "".join(
             f'<span class="ndaw-dirt ndaw-dirt-{i}"></span>' for i in range(1, 6)
@@ -91,7 +94,6 @@ def dog_digging_progress(percent: float, status_text: str = "") -> str:
         scene = f"""<div class="ndaw-dog-body"></div>
 <div class="ndaw-dog-emoji ndaw-dog-dig">🐶</div>
 {dirt_particles}""".strip()
-        bar_class = "ndaw-bar-fill"
 
     return f"""<div class="ndaw-dog-wrap">
 <style>
@@ -101,13 +103,37 @@ def dog_digging_progress(percent: float, status_text: str = "") -> str:
     padding:14px 16px 12px; margin:6px 0 10px;
 }}
 .ndaw-dog-scene {{
-    position:relative; height:60px; overflow:hidden; margin-bottom:8px;
+    position:relative; height:60px; overflow:hidden;
+}}
+.ndaw-dog-mover {{
+    position:absolute; bottom:0; left:{dog_left:.1f}%;
+    transform:translateX(-50%);
+    transition:left .4s ease;
 }}
 .ndaw-dog-body {{
-    position:absolute; left:calc(50% - 22px); bottom:8px;
-    width:44px; height:16px; border-radius:50%;
-    background:radial-gradient(ellipse at center, #E0C29A 0%, rgba(224,194,154,0) 75%);
-    opacity:0.8;
+    position:absolute; left:calc(50% - 19px); bottom:8px;
+    width:38px; height:24px; border-radius:52% 52% 46% 46%;
+    background:
+        radial-gradient(circle at 30% 25%, rgba(255,255,255,0.35) 0%, rgba(255,255,255,0) 30%),
+        radial-gradient(circle at 70% 70%, rgba(120,70,15,0.25) 0%, rgba(120,70,15,0) 35%),
+        linear-gradient(165deg, #E8B45E 0%, #C9822E 55%, #B06F24 100%);
+    box-shadow:
+        inset -4px -5px 5px rgba(110,62,10,0.4),
+        inset 3px 3px 5px rgba(255,240,210,0.55),
+        0 2px 3px rgba(0,0,0,0.12);
+}}
+.ndaw-dog-body::before {{
+    content:""; position:absolute; left:50%; bottom:2px; transform:translateX(-50%);
+    width:16px; height:10px; border-radius:50%;
+    background:linear-gradient(180deg,#F5DDB0,#E8C589);
+    opacity:0.9;
+}}
+.ndaw-dog-body::after {{
+    content:""; position:absolute; left:-3px; bottom:-1px;
+    width:8px; height:6px; border-radius:50%;
+    background:#B06F24;
+    box-shadow:26px 0 0 #B06F24;
+    opacity:0.85;
 }}
 .ndaw-dog-emoji {{
     position:absolute; left:calc(50% - 18px); bottom:10px;
@@ -163,22 +189,10 @@ def dog_digging_progress(percent: float, status_text: str = "") -> str:
     15% {{ opacity:1; }}
     100% {{ opacity:0; transform:translate(-24px,-26px) scale(1); }}
 }}
-.ndaw-bar-track {{
-    background:#E3D6D7; border-radius:8px; height:12px; overflow:hidden;
-}}
-.ndaw-bar-fill {{
-    height:100%; border-radius:8px; width:{percent:.1f}%;
-    background:linear-gradient(90deg,{ACCENT},{ACCENT_DARK});
-    transition:width .3s ease;
-}}
-.ndaw-bar-done {{
-    background:linear-gradient(90deg,#2E9E5B,#1f7a44);
-}}
 .ndaw-dog-status {{
     margin-top:6px; font-size:12.5px; color:{ACCENT_DARK}; font-weight:600; text-align:center;
 }}
 </style>
-<div class="ndaw-dog-scene"><div class="ndaw-ground"></div>{scene}</div>
-<div class="ndaw-bar-track"><div class="{bar_class}"></div></div>
+<div class="ndaw-dog-scene"><div class="ndaw-ground"></div><div class="ndaw-dog-mover">{scene}</div></div>
 <div class="ndaw-dog-status">{status_text}</div>
 </div>""".strip()

@@ -71,7 +71,7 @@ def seed_tree_indicator(label: str = "AI 讀取資料中...") -> str:
 def dog_digging_progress(percent: float, status_text: str = "") -> str:
     """
     percent: 0~100。
-    < 100：小狗在土堆上刨土，泥屑不斷往後飛濺，下方是填色進度條。
+    < 100：小狗蹲在草地土堆上輕輕刨土，泥屑不斷往後飛濺，下方是填色進度條。
     >= 100：小狗叼著一根大骨頭，開心搖尾巴，進度條變成完成色。
     status_text：進度條下方的文字說明（例如「已完成 6/10 主題」）。
     """
@@ -79,7 +79,8 @@ def dog_digging_progress(percent: float, status_text: str = "") -> str:
     done = percent >= 100
 
     if done:
-        scene = """<div class="ndaw-dog-emoji ndaw-dog-happy">🐶</div>
+        scene = """<div class="ndaw-dog-body"></div>
+<div class="ndaw-dog-emoji ndaw-dog-happy">🐶</div>
 <div class="ndaw-bone">🦴</div>""".strip()
         status_text = status_text or "🎉 全部完成！"
         bar_class = "ndaw-bar-fill ndaw-bar-done"
@@ -87,7 +88,7 @@ def dog_digging_progress(percent: float, status_text: str = "") -> str:
         dirt_particles = "".join(
             f'<span class="ndaw-dirt ndaw-dirt-{i}"></span>' for i in range(1, 6)
         )
-        scene = f"""<div class="ndaw-ground"></div>
+        scene = f"""<div class="ndaw-dog-body"></div>
 <div class="ndaw-dog-emoji ndaw-dog-dig">🐶</div>
 {dirt_particles}""".strip()
         bar_class = "ndaw-bar-fill"
@@ -100,16 +101,24 @@ def dog_digging_progress(percent: float, status_text: str = "") -> str:
     padding:14px 16px 12px; margin:6px 0 10px;
 }}
 .ndaw-dog-scene {{
-    position:relative; height:56px; overflow:hidden; margin-bottom:8px;
+    position:relative; height:60px; overflow:hidden; margin-bottom:8px;
+}}
+.ndaw-dog-body {{
+    position:absolute; left:calc(50% - 22px); bottom:8px;
+    width:44px; height:16px; border-radius:50%;
+    background:radial-gradient(ellipse at center, #E0C29A 0%, rgba(224,194,154,0) 75%);
+    opacity:0.8;
 }}
 .ndaw-dog-emoji {{
-    position:absolute; left:calc(50% - 20px); bottom:6px;
-    font-size:30px; line-height:1; display:inline-block;
+    position:absolute; left:calc(50% - 18px); bottom:10px;
+    font-size:28px; line-height:1; display:inline-block;
+    transform-origin:bottom center;
 }}
-.ndaw-dog-dig {{ animation: ndaw-digbounce 0.45s ease-in-out infinite alternate; }}
+.ndaw-dog-dig {{ animation: ndaw-digbounce 0.5s ease-in-out infinite alternate; }}
 @keyframes ndaw-digbounce {{
-    0% {{ transform: translateY(0) rotate(-6deg); }}
-    100% {{ transform: translateY(3px) rotate(4deg); }}
+    0%   {{ transform: translateY(0) scale(1,1) rotate(-2deg); }}
+    50%  {{ transform: translateY(3px) scale(1.04,0.94) rotate(0deg); }}
+    100% {{ transform: translateY(0) scale(1,1) rotate(2deg); }}
 }}
 .ndaw-dog-happy {{ animation: ndaw-wag 0.5s ease-in-out infinite; transform-origin:bottom center; }}
 @keyframes ndaw-wag {{
@@ -118,7 +127,7 @@ def dog_digging_progress(percent: float, status_text: str = "") -> str:
     100% {{ transform: rotate(-8deg); }}
 }}
 .ndaw-bone {{
-    position:absolute; left:calc(50% + 6px); bottom:16px; font-size:20px;
+    position:absolute; left:calc(50% + 10px); bottom:20px; font-size:18px;
     animation: ndaw-bonebounce 1.1s ease-in-out infinite;
 }}
 @keyframes ndaw-bonebounce {{
@@ -126,12 +135,20 @@ def dog_digging_progress(percent: float, status_text: str = "") -> str:
     50% {{ transform: translateY(-3px) rotate(10deg); }}
 }}
 .ndaw-ground {{
-    position:absolute; left:8%; right:8%; bottom:4px; height:6px;
-    background:linear-gradient(90deg,#C8A27A,#B98E63);
-    border-radius:3px; opacity:0.6;
+    position:absolute; left:0; right:0; bottom:0; height:12px;
+}}
+.ndaw-ground::before {{
+    content:""; position:absolute; left:6%; right:6%; top:0; height:4px;
+    background:linear-gradient(90deg,#8FBF6B,#6FA34F);
+    border-radius:3px 3px 0 0;
+}}
+.ndaw-ground::after {{
+    content:""; position:absolute; left:6%; right:6%; top:4px; height:8px;
+    background:linear-gradient(90deg,#B98E63,#9C6B3E);
+    border-radius:0 0 3px 3px; opacity:0.75;
 }}
 .ndaw-dirt {{
-    position:absolute; bottom:12px; left:calc(50% - 4px);
+    position:absolute; bottom:16px; left:calc(50% - 4px);
     width:6px; height:6px; border-radius:50%;
     background:#9C6B3E; opacity:0;
     animation: ndaw-fly 0.9s ease-out infinite;
@@ -144,7 +161,7 @@ def dog_digging_progress(percent: float, status_text: str = "") -> str:
 @keyframes ndaw-fly {{
     0% {{ opacity:0; transform:translate(0,0) scale(0.6); }}
     15% {{ opacity:1; }}
-    100% {{ opacity:0; transform:translate(-26px,-30px) scale(1); }}
+    100% {{ opacity:0; transform:translate(-24px,-26px) scale(1); }}
 }}
 .ndaw-bar-track {{
     background:#E3D6D7; border-radius:8px; height:12px; overflow:hidden;
@@ -161,7 +178,7 @@ def dog_digging_progress(percent: float, status_text: str = "") -> str:
     margin-top:6px; font-size:12.5px; color:{ACCENT_DARK}; font-weight:600; text-align:center;
 }}
 </style>
-<div class="ndaw-dog-scene">{scene}</div>
+<div class="ndaw-dog-scene"><div class="ndaw-ground"></div>{scene}</div>
 <div class="ndaw-bar-track"><div class="{bar_class}"></div></div>
 <div class="ndaw-dog-status">{status_text}</div>
 </div>""".strip()

@@ -44,10 +44,10 @@ SHEET_VENDOR_DOCS = "廠商文件"
 # 2. 使用者資料儲存位置（本機端案件庫；正式環境建議改接資料庫）
 # ---------------------------------------------------------------------------
 DATA_DIR = BASE_DIR / "data"
-CASES_DIR = DATA_DIR / "cases"          # 每個新藥申請案一個子資料夾
-UPLOADS_DIRNAME = "uploads"             # 案件內：使用者上傳的文獻/表單
-OUTPUT_DIRNAME = "outputs"              # 案件內：產生的簡報輸出
-USERS_FILE = DATA_DIR / "users.json"    # 簡易帳號/角色設定
+CASES_DIR = DATA_DIR / "cases"  # 每個新藥申請案一個子資料夾
+UPLOADS_DIRNAME = "uploads"  # 案件內：使用者上傳的文獻/表單
+OUTPUT_DIRNAME = "outputs"  # 案件內：產生的簡報輸出
+USERS_FILE = DATA_DIR / "users.json"  # 簡易帳號/角色設定
 ADMIN_OVERRIDES_FILE = DATA_DIR / "admin_overrides.json"  # 後台可調參數（Prompt、門檻）覆蓋檔
 
 for d in (DATA_DIR, CASES_DIR):
@@ -82,6 +82,7 @@ DEFAULT_MODEL = os.environ.get("NEWDRUG_AI_MODEL", "claude-sonnet-4-5")
 # 因應 Google 模型改版頻繁，此值僅為「找不到使用者自訂設定時」的退回值，
 # 使用者可直接在側邊欄「AI 模型金鑰設定」輸入其他型號字串覆蓋，不需改程式碼重新部署。
 DEFAULT_GEMINI_MODEL = os.environ.get("NEWDRUG_GEMINI_MODEL", "gemini-3.6-flash")
+
 MAX_TOKENS_PER_TOPIC = 3000
 # 每個主題最多送幾張圖片給 AI 視覺辨識（控制費用/延遲；仿單/文獻截圖通常 1-3 張就夠）
 MAX_IMAGES_PER_TOPIC = 4
@@ -140,10 +141,10 @@ NUM_TOPICS = 10
 # 7. 0-Token 結構化匯入（不使用 LLM 的主題）
 # ---------------------------------------------------------------------------
 # 這幾個主題的內容本質上是「照抄結構化資料」而非「需要 AI 統整判讀」：
-#   主題1 封面：案件建立時藥師已經手動輸入過藥品英中文名，直接沿用即可。
-#   主題2 申請總表：來源是廠商/醫師填寫的「新進藥品申請表」（結構化表單），逐欄對應即可。
-#   主題9 臨床使用意見：來源是各院區藥師填寫的 Google 表單，逐字照登，AI 改寫反而是風險
-#     （語言模型天生有「順一下文字」的傾向，光靠 Prompt 規則無法保證 100% 逐字不動）。
+# 主題1 封面：案件建立時藥師已經手動輸入過藥品英中文名，直接沿用即可。
+# 主題2 申請總表：來源是廠商/醫師填寫的「新進藥品申請表」（結構化表單），逐欄對應即可。
+# 主題9 臨床使用意見：來源是各院區藥師填寫的 Google 表單，逐字照登，AI 改寫反而是風險
+# （語言模型天生有「順一下文字」的傾向，光靠 Prompt 規則無法保證 100% 逐字不動）。
 # 一律用 Python 直接解析結構化資料寫入 payload，完全不呼叫 LLM，0 token 消耗。
 SKIP_LLM_TOPICS = {1, 2, 9}
 
@@ -169,8 +170,9 @@ TOPIC9_DEFAULT_COLUMN_MAP = {
     "pharmacist_opinion": "臨床意見",
     "physician_opinion": "醫師意見",  # 選填；表單沒有這欄就會用下面的固定套語
 }
+
 TOPIC9_DEFAULT_PHYSICIAN_OPINION = "為提申請之科別，不另行詢問。"
-TOPIC9_DEFAULT_PHYSICIAN_OPINION = "請在此輸入預設的醫師意見文字"
+
 # ---------------------------------------------------------------------------
 # 8. 主題7「醫療科技評估(HTA)」PDF關鍵字智慧擷取
 # ---------------------------------------------------------------------------

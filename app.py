@@ -185,7 +185,9 @@ def render_upload_section(drug_case: DrugCase) -> tuple[dict[int, str], dict[int
             for p in doc_files:
                 # 修正：先前這裡只丟檔名給 AI，AI 從未讀過檔案內容，
                 # 導致引用文獻/數據是模型憑訓練知識腦補，與使用者實際上傳的文獻不符。
-                extracted = utils.extract_text_from_upload(p)
+                # 主題7的HTA報告篇幅長，改用關鍵字智慧擷取，避免真正的決策段落
+                # 埋在文件中後段、被單純的「頭部截斷」漏掉。
+                extracted = utils.extract_text_from_upload(p, keywords=config.TOPIC7_HTA_KEYWORDS if topic_no == 7 else None,)
                 ctx_parts.append(f"== 使用者上傳檔案：{p.name} ==\n{extracted}")
                 is_note = extracted.startswith("（") and extracted.endswith("）")
                 if is_note:

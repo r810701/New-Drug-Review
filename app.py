@@ -297,7 +297,9 @@ def _render_structured_import_block(
             if fetched.startswith("（") and fetched.endswith("）"):
                 st.error(f"抓取失敗：{fetched}")
             else:
-                rows = structured_data.parse_csv_text(fetched)
+                rows = (
+                  structured_data.parse_csv_two_row_header(fetched)
+                  if topic_no == 9 else structured_data.parse_csv_text(fetched))
                 filtered = structured_data.filter_rows(rows, filter_col, filter_val)
                 detected_cols = structured_data.detect_columns(rows)
 

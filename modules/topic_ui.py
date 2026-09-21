@@ -3,22 +3,24 @@
 modules/topic_ui.py
 =====================
 把 TopicContent.payload（AI 生成的結構化 JSON）轉成：
-  1. render_slide_preview_html()：模擬 PowerPoint 投影片外觀的「視覺化預覽卡片」
-  2. render_editable_form()：不需要碰 JSON/大括號的表單編輯介面
+1. render_slide_preview_html()：模擬 PowerPoint 投影片外觀的「視覺化預覽卡片」
+2. render_editable_form()：不需要碰 JSON/大括號的表單編輯介面
 
 設計理念（重要，關係到好不好維護）：
-  10 個主題的 payload 結構彼此差異很大（主題3是幾句摘要文字，主題8是表格，
-  主題10是十宮格清單...），如果為每個主題各寫一份客製表單，未來 Excel
-  「主題架構規格」的 AI 代工目標一改欄位，程式就要跟著改 10 次。
-  這裡改用「通用欄位解析」：走訪 payload 的每個 key，依值的型別
-  （純文字 / 文字清單 / 物件清單 / 巢狀物件）自動選擇合適的元件：
-    - 純文字，短 → st.text_input；長/含換行 → st.text_area
-    - 文字清單（如條列式申請理由）→ 一行一則的 st.text_area
-    - 物件清單（如指引比較表、HTA 表、試驗數據列）→ st.data_editor
-      （這是 Streamlit 內建的「試算表式」編輯器，可直接加列/刪列/改欄位，
-      使用者操作起來像 Excel，完全不會碰到 JSON 語法）
-    - 巢狀物件（如臨床意見的資訊盒）→ 遞迴套用同一套規則
-  這樣不管 Excel 以後怎麼調整欄位，這裡都不需要跟著改。
+10 個主題的 payload 結構彼此差異很大（主題3是幾句摘要文字，主題8是表格，
+主題10是十宮格清單...），如果為每個主題各寫一份客製表單，未來 Excel
+「主題架構規格」的 AI 代工目標一改欄位，程式就要跟著改 10 次。
+
+這裡改用「通用欄位解析」：走訪 payload 的每個 key，依值的型別
+（純文字 / 文字清單 / 物件清單 / 巢狀物件）自動選擇合適的元件：
+- 純文字，短 → st.text_input；長/含換行 → st.text_area
+- 文字清單（如條列式申請理由）→ 一行一則的 st.text_area
+- 物件清單（如指引比較表、HTA 表、試驗數據列）→ st.data_editor
+  （這是 Streamlit 內建的「試算表式」編輯器，可直接加列/刪列/改欄位，
+  使用者操作起來像 Excel，完全不會碰到 JSON 語法）
+- 巢狀物件（如臨床意見的資訊盒）→ 遞迴套用同一套規則
+
+這樣不管 Excel 以後怎麼調整欄位，這裡都不需要跟著改。
 """
 from __future__ import annotations
 
@@ -74,6 +76,7 @@ def _is_list_of_dict(v: Any) -> bool:
 # ---------------------------------------------------------------------------
 # 1. 視覺化投影片預覽卡片
 # ---------------------------------------------------------------------------
+
 def _esc(s: Any) -> str:
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -130,6 +133,10 @@ def _render_value_html(key: str, value: Any, depth: int = 0) -> str:
 
 def render_slide_preview_html(topic_no: int, title: str, payload: dict) -> str:
     """回傳完整 HTML（含 <style>），呈現成一張模擬 PPT 的 16:9 卡片。"""
+    if isinstance(payload, list):
+        # AI 有時會把整份結果直接輸出成清單（常見於一次比較 3 種以上藥品時），
+        # 而不是包在字典裡，這裡轉換成統一格式，避免 payload.items() 直接當機。
+        payload = {"rows": payload}
     body_parts = [
         _render_value_html(k, v) for k, v in payload.items() if k not in _HIDDEN_KEYS
     ]
@@ -141,43 +148,42 @@ def render_slide_preview_html(topic_no: int, title: str, payload: dict) -> str:
             "或直接在下方表單手動填寫。</div>"
         )
 
-    return f"""
-<div class="ndaw-slide-outer">
-  <style>
-    .ndaw-slide-outer {{ margin-bottom:10px; }}
-    .ndaw-slide-card {{
-      aspect-ratio:16/9; background:#fff; border-radius:14px;
-      box-shadow:0 2px 12px rgba(0,0,0,.10); border:1px solid #e6e0e0;
-      display:flex; flex-direction:column; overflow:hidden;
-      font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;
-    }}
-    .ndaw-slide-topbar {{
-      background:linear-gradient(90deg,{ACCENT},{ACCENT_DARK}); color:#fff;
-      padding:10px 20px; font-weight:700; font-size:15px; flex-shrink:0;
-    }}
-    .ndaw-slide-body {{
-      padding:12px 22px; overflow-y:auto; font-size:12.5px; color:#2a2a2a; flex:1; line-height:1.5;
-    }}
-    .ndaw-slide-empty {{
-      color:#999; font-size:13px; text-align:center; margin-top:30px; padding:0 20px;
-    }}
-    .ndaw-slide-table {{ border-collapse:collapse; width:100%; margin-top:4px; font-size:11.5px; }}
-    .ndaw-slide-table th, .ndaw-slide-table td {{
-      border:1px solid #e6e0e0; padding:4px 7px; text-align:left; vertical-align:top;
-    }}
-    .ndaw-slide-table th {{ background:#F7F3F3; color:{ACCENT_DARK}; }}
-  </style>
-  <div class="ndaw-slide-card">
-    <div class="ndaw-slide-topbar">主題 {topic_no}：{_esc(title)}</div>
-    <div class="ndaw-slide-body">{body_html}</div>
-  </div>
+    return f"""<div class="ndaw-slide-outer">
+<style>
+.ndaw-slide-outer {{ margin-bottom:10px; }}
+.ndaw-slide-card {{
+    aspect-ratio:16/9; background:#fff; border-radius:14px;
+    box-shadow:0 2px 12px rgba(0,0,0,.10); border:1px solid #e6e0e0;
+    display:flex; flex-direction:column; overflow:hidden;
+    font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;
+}}
+.ndaw-slide-topbar {{
+    background:linear-gradient(90deg,{ACCENT},{ACCENT_DARK}); color:#fff;
+    padding:10px 20px; font-weight:700; font-size:15px; flex-shrink:0;
+}}
+.ndaw-slide-body {{
+    padding:12px 22px; overflow-y:auto; font-size:12.5px; color:#2a2a2a; flex:1; line-height:1.5;
+}}
+.ndaw-slide-empty {{
+    color:#999; font-size:13px; text-align:center; margin-top:30px; padding:0 20px;
+}}
+.ndaw-slide-table {{ border-collapse:collapse; width:100%; margin-top:4px; font-size:11.5px; }}
+.ndaw-slide-table th, .ndaw-slide-table td {{
+    border:1px solid #e6e0e0; padding:4px 7px; text-align:left; vertical-align:top;
+}}
+.ndaw-slide-table th {{ background:#F7F3F3; color:{ACCENT_DARK}; }}
+</style>
+<div class="ndaw-slide-card">
+<div class="ndaw-slide-topbar">主題 {topic_no}：{_esc(title)}</div>
+<div class="ndaw-slide-body">{body_html}</div>
 </div>
-""".strip()
+</div>""".strip()
 
 
 # ---------------------------------------------------------------------------
 # 2. 人性化表單編輯（不碰 JSON）
 # ---------------------------------------------------------------------------
+
 def _edit_scalar(key: str, value: Any, key_prefix: str) -> Any:
     label = humanize_key(key)
     text = "" if value is None else str(value)
@@ -201,6 +207,7 @@ def _edit_list_of_dict(key: str, value: list[dict], key_prefix: str) -> list[dic
         df, key=f"{key_prefix}_{key}", num_rows="dynamic", use_container_width=True, hide_index=True,
     )
     records = edited.to_dict(orient="records")
+
     # data_editor 空列會補 NaN，清掉整列都是空值的殘留列。
     # 注意：欄位值本身可能是 list（例如「代表藥品」不只一個），對 list 呼叫 pd.isna()
     # 會回傳逐元素比較的陣列而不是單一 True/False，要先排除掉才不會炸。
@@ -248,6 +255,8 @@ def render_editable_form(topic_no: int, payload: dict, key_prefix: str) -> dict:
     （呼叫端要在按下『套用修改』時才把回傳值寫回 content.payload 並存檔，
     避免使用者只是打字打到一半、還沒按套用就被當成正式內容）。
     """
+    if isinstance(payload, list):
+        payload = {"rows": payload}
     if not payload or set(payload.keys()) <= _HIDDEN_KEYS:
         st.caption("目前沒有可編輯的欄位，請先產生內容，或使用最下方「進階：新增欄位」。")
         return dict(payload)

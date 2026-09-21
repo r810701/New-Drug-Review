@@ -185,7 +185,9 @@ def render_upload_section(drug_case: DrugCase) -> tuple[dict[int, str], dict[int
             for p in doc_files:
                 # 修正：先前這裡只丟檔名給 AI，AI 從未讀過檔案內容，
                 # 導致引用文獻/數據是模型憑訓練知識腦補，與使用者實際上傳的文獻不符。
-                extracted = utils.extract_text_from_upload(p)
+                # 主題7的HTA報告篇幅長，改用關鍵字智慧擷取，避免真正的決策段落
+                # 埋在文件中後段、被單純的「頭部截斷」漏掉。
+                extracted = utils.extract_text_from_upload(p, keywords=config.TOPIC7_HTA_KEYWORDS if topic_no == 7 else None,)
                 ctx_parts.append(f"== 使用者上傳檔案：{p.name} ==\n{extracted}")
                 is_note = extracted.startswith("（") and extracted.endswith("）")
                 if is_note:
@@ -295,7 +297,9 @@ def _render_structured_import_block(
             if fetched.startswith("（") and fetched.endswith("）"):
                 st.error(f"抓取失敗：{fetched}")
             else:
-                rows = structured_data.parse_csv_text(fetched)
+                rows = (
+                  structured_data.parse_csv_two_row_header(fetched)
+                  if topic_no == 9 else structured_data.parse_csv_text(fetched))
                 filtered = structured_data.filter_rows(rows, filter_col, filter_val)
                 detected_cols = structured_data.detect_columns(rows)
 
@@ -361,11 +365,11 @@ def render_generate_and_edit(
             if not ok:
                 failed_topics.append(topic_no)
             label = (
-                f"{'✅' if ok else '❌'} 已完成 {done_count['n']}/{ai_topic_total} 個 AI 主題（主題 {topic_no}）"
+                f"{'✅' if ok else '❌'} 已完成主題 {topic_no}/{config.NUM_TOPICS}"
                 + ("（有主題失敗，將繼續產生其他主題）" if failed_topics else "")
             )
             dog_placeholder.markdown(
-                ui_widgets.dog_digging_progress(done_count["n"] / ai_topic_total * 100, label),
+                ui_widgets.dog_digging_progress(topic_no / config.NUM_TOPICS * 100, label),
                 unsafe_allow_html=True,
             )
 
@@ -434,6 +438,12 @@ def render_generate_and_edit(
                         )
                         content.reviewer_note = old_note
                         deck.topics[topic_no] = content
+                        if topic_no == config.NUM_TOPICS and "_generation_error" not in content.payload:
+                            deck.ten_grid = ai_engine.generate_ten_grid(content.payload)
+                            deck.summary_points = content.payload.get("summary_points", [])
+                            deck.review_history_note = content.payload.get("review_history_note", "")
+                            ai_reco = content.payload.get("final_recommendation")
+                            deck.final_recommendation = ai_reco or ai_engine.compute_recommendation(deck.ten_grid)
                         case_store.save_deck(deck)
                         seedtree_placeholder.empty()
                         st.success("已重新產生，請確認下方內容。")

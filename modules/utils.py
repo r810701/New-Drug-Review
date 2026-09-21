@@ -13,10 +13,10 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-
 # ---------------------------------------------------------------------------
 # 檔案指紋：用來偵測「管理藥師是否更新過知識庫檔案」
 # ---------------------------------------------------------------------------
+
 def compute_dir_fingerprint(dir_path: Path, patterns: tuple[str, ...] = ("*",)) -> str:
     """
     對資料夾內符合 patterns 的檔案，依「檔名 + mtime + size」算出一組 sha256 指紋。
@@ -34,20 +34,18 @@ def compute_dir_fingerprint(dir_path: Path, patterns: tuple[str, ...] = ("*",)) 
     joined = "\n".join(entries)
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
 
-
 # ---------------------------------------------------------------------------
 # PubMed / DOI 連結組裝（對應 Excel 規則：「文獻查證與交付」）
 # ---------------------------------------------------------------------------
+
 def pubmed_url(pmid: str) -> str:
     pmid = pmid.strip()
     return f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
-
 
 def doi_url(doi: str) -> str:
     doi = doi.strip()
     doi = re.sub(r"^https?://(dx\.)?doi\.org/", "", doi, flags=re.IGNORECASE)
     return f"https://doi.org/{doi}"
-
 
 def autolink_citation(raw: str) -> str:
     """
@@ -63,17 +61,16 @@ def autolink_citation(raw: str) -> str:
         return f"{raw} → {doi_url(m.group(1))}"
     return raw
 
-
 # ---------------------------------------------------------------------------
 # 文字/JSON 處理
 # ---------------------------------------------------------------------------
+
 def strip_code_fences(text: str) -> str:
     """去除 LLM 回覆中常見的 ```json ... ``` 包裹"""
     text = text.strip()
     text = re.sub(r"^```(json)?", "", text, flags=re.IGNORECASE).strip()
     text = re.sub(r"```$", "", text).strip()
     return text
-
 
 def safe_json_loads(text: str) -> Optional[Any]:
     """盡量把 LLM 回覆解析成 JSON；失敗回傳 None（呼叫端要自行處理 fallback）"""
@@ -89,7 +86,6 @@ def safe_json_loads(text: str) -> Optional[Any]:
             except json.JSONDecodeError:
                 return None
         return None
-
 
 def abbreviate_common_terms(text: str) -> str:
     """
@@ -109,11 +105,9 @@ def abbreviate_common_terms(text: str) -> str:
         text = re.sub(re.escape(full), abbr, text, flags=re.IGNORECASE)
     return text
 
-
 def truncate(text: str, n: int = 60) -> str:
     text = (text or "").replace("\n", " ")
     return text if len(text) <= n else text[: n - 1] + "…"
-
 
 # ---------------------------------------------------------------------------
 # 使用者上傳檔案的文字擷取（支援 PDF / Word / Excel / CSV / 純文字）
@@ -121,9 +115,9 @@ def truncate(text: str, n: int = 60) -> str:
 # 修正紀錄：原本上傳區塊只把「檔名」丟進 AI 的 Prompt，AI 從未讀過檔案實際內容，
 # 導致引用文獻/數據完全是模型憑訓練知識腦補（例如同一篇知名試驗被套用到不相關主題）。
 # 這裡改成真的解析檔案內容，讓 AI 有真實文獻全文可以引用。
+
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 TEXT_EXTRACTABLE_EXTS = {".pdf", ".txt", ".md", ".docx", ".xlsx", ".csv"}
-
 
 def _extract_pdf_text_full(path: Path) -> str:
     try:
@@ -135,7 +129,6 @@ def _extract_pdf_text_full(path: Path) -> str:
         return "\n".join(page.extract_text() or "" for page in reader.pages)
     except Exception as e:  # noqa: BLE001
         return f"（PDF 解析失敗：{e}；此檔案內容 AI 無法讀取，請人工確認）"
-
 
 def _extract_docx_text(path: Path) -> str:
     try:
@@ -153,7 +146,6 @@ def _extract_docx_text(path: Path) -> str:
         return "\n".join(parts)
     except Exception as e:  # noqa: BLE001
         return f"（Word 檔解析失敗：{e}；此檔案內容 AI 無法讀取，請人工確認）"
-
 
 def _extract_excel_text(path: Path) -> str:
     if path.suffix.lower() == ".xls":
@@ -179,17 +171,70 @@ def _extract_excel_text(path: Path) -> str:
     except Exception as e:  # noqa: BLE001
         return f"（Excel 檔解析失敗：{e}；此檔案內容 AI 無法讀取，請人工確認）"
 
+def extract_relevant_snippets(
+    full_text: str, keywords: list[str], max_chars: int = 8000, context_chars: int = 500,
+) -> Optional[str]:
+    """
+    在長文本中，找出包含任一關鍵字（不分大小寫）的位置，各自往前後擴展
+    context_chars 字元當作上下文，依原文出現順序合併相鄰/重疊片段後拼接，
+    直到湊滿 max_chars。找不到任何關鍵字時回傳 None，讓呼叫端自行退回
+    原本的「頭部截斷」邏輯，確保不會因為關鍵字沒命中就回傳空白內容。
+    """
+    if not full_text or not keywords:
+        return None
+    lower_text = full_text.lower()
+    hit_spans: list[tuple[int, int]] = []
+    for kw in keywords:
+        kw_lower = kw.lower()
+        start = 0
+        while True:
+            idx = lower_text.find(kw_lower, start)
+            if idx == -1:
+                break
+            hit_spans.append((max(0, idx - context_chars), min(len(full_text), idx + len(kw) + context_chars)))
+            start = idx + len(kw)
+    if not hit_spans:
+        return None
+    hit_spans.sort()
+    merged: list[list[int]] = []
+    for s, e in hit_spans:
+        if merged and s <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    parts, total = [], 0
+    for s, e in merged:
+        snippet = full_text[s:e].strip()
+        if not snippet:
+            continue
+        if total + len(snippet) > max_chars:
+            remain = max_chars - total
+            if remain <= 0:
+                break
+            snippet = snippet[:remain]
+        parts.append(snippet)
+        total += len(snippet)
+        if total >= max_chars:
+            break
+    return "\n...\n".join(parts)
 
-def extract_text_from_upload(path: Path, max_chars: int = 8000) -> str:
+def extract_text_from_upload(
+    path: Path, max_chars: int = 8000, keywords: Optional[list[str]] = None,
+) -> str:
     """
     嘗試擷取上傳檔案的文字內容，供塞進 AI Prompt 使用。
     回傳值一定是「可以直接顯示給使用者看」的字串（含失敗/不支援時的說明），
     呼叫端不需要再另外判斷是否擷取成功。
+
+    keywords 有值時（目前僅主題7使用），改用「關鍵字智慧擷取」：不再死板地
+    只送文件開頭 max_chars 字元，而是優先擷取含關鍵字段落的上下文，同樣的
+    字元上限，但能抓到真正相關的內容（例如長篇HTA報告裡，給付決策段落
+    很可能不在文件開頭）。全文找不到任何關鍵字時，自動退回原本的頭部截斷。
+
     圖片檔不走這裡——圖片是直接以視覺方式交給 AI（見 encode_image_for_claude /
     load_image_for_gemini），文字擷取對圖片沒有意義。
     """
     suffix = path.suffix.lower()
-
     if suffix == ".pdf":
         text = _extract_pdf_text_full(path)
     elif suffix in (".txt", ".md"):
@@ -213,10 +258,16 @@ def extract_text_from_upload(path: Path, max_chars: int = 8000) -> str:
     if not text:
         return "（此檔案擷取不到文字，可能是掃描影像型 PDF 或空白文件；AI 無法讀取實際內容，" \
                "請人工確認或手動輸入摘要，否則 AI 只會憑一般知識作答，可能與本篇文獻不符）"
+
+    if keywords:
+        smart = extract_relevant_snippets(text, keywords, max_chars=max_chars)
+        if smart:
+            return smart + f"\n...(已依關鍵字智慧擷取相關段落，原文共 {len(text)} 字元)"
+        # 全文都找不到任何關鍵字命中時，退回原本的頭部截斷，並提醒人工確認
+
     if len(text) > max_chars:
         text = text[:max_chars] + f"\n...(內容過長已截斷，原文共 {len(text)} 字元，AI 僅看得到前 {max_chars} 字元)"
     return text
-
 
 # ---------------------------------------------------------------------------
 # 圖片檔案：以視覺（vision）方式直接交給 AI 辨識，而非文字擷取
@@ -224,7 +275,6 @@ def extract_text_from_upload(path: Path, max_chars: int = 8000) -> str:
 _MEDIA_TYPE_BY_SUFFIX = {
     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
 }
-
 
 def encode_image_for_claude(path: Path, max_dimension: int = 1568) -> tuple[str, str]:
     """
@@ -234,11 +284,9 @@ def encode_image_for_claude(path: Path, max_dimension: int = 1568) -> tuple[str,
     沒裝 Pillow 時退回直接讀取原始檔案 bytes（仍可運作，只是可能較大張、較貴）。
     """
     import base64
-
     try:
         from PIL import Image
         import io
-
         img = Image.open(path)
         img = img.convert("RGB")
         w, h = img.size
@@ -252,7 +300,6 @@ def encode_image_for_claude(path: Path, max_dimension: int = 1568) -> tuple[str,
         data = path.read_bytes()
         media_type = _MEDIA_TYPE_BY_SUFFIX.get(path.suffix.lower(), "image/jpeg")
         return base64.b64encode(data).decode("ascii"), media_type
-
 
 def load_image_for_gemini(path: Path, max_dimension: int = 1568):
     """回傳 PIL.Image 物件供 Gemini SDK 直接放進 generate_content([...]) 的內容列表；
@@ -269,14 +316,12 @@ def load_image_for_gemini(path: Path, max_dimension: int = 1568):
     except ImportError:
         return None
 
-
 # ---------------------------------------------------------------------------
 # 使用者貼的連結：真正抓取內容（修正紀錄：原本只把網址文字塞進 Prompt，
 # AI 透過 API 呼叫本身沒有瀏覽器/上網能力，看到的只是一串文字，並不會知道網頁/表單內容）
 # ---------------------------------------------------------------------------
 _URL_RE = re.compile(r"https?://[^\s\u3000]+")
 _GSHEET_RE = re.compile(r"https://docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]+)")
-
 
 def _to_gsheet_csv_url(url: str) -> Optional[str]:
     """把 Google 試算表的『編輯畫面網址』轉成可直接下載內容的 CSV 匯出網址。
@@ -290,14 +335,12 @@ def _to_gsheet_csv_url(url: str) -> Optional[str]:
     gid = gid_match.group(1) if gid_match else "0"
     return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
 
-
 def _strip_html(html: str) -> str:
     html = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html)
     html = re.sub(r"(?s)<[^>]+>", "\n", html)
     html = re.sub(r"[ \t]+", " ", html)
     html = re.sub(r"\n{2,}", "\n", html)
     return html.strip()
-
 
 def fetch_url_content(url: str, max_chars: int = 6000, timeout: int = 10) -> str:
     """
@@ -336,11 +379,9 @@ def fetch_url_content(url: str, max_chars: int = 6000, timeout: int = 10) -> str
         text = text[:max_chars] + f"\n...(內容過長已截斷，原文共 {len(text)} 字元)"
     return text
 
-
 def extract_urls(text: str) -> list[str]:
     """從使用者貼的文字裡抓出所有網址，逐一 fetch。"""
     return _URL_RE.findall(text or "")
-
 
 def strip_urls(text: str) -> str:
     """移除文字中的網址，留下使用者順手寫的備註文字。"""

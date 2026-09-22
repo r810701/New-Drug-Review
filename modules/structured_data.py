@@ -18,13 +18,38 @@ from modules.schema import DrugCase
 # CSV 解析
 # ---------------------------------------------------------------------------
 
+def _find_header_row_index(rows: list[list[str]], min_nonempty: int = 3) -> int:
+    """
+    有些Excel/表單在正式表頭上方，會多一列「季度/年度」之類的標題列
+    （例如「115.Q1」單獨佔第一列，其餘欄位空白），如果直接把第一列當表頭，
+    真正的欄位名稱（例如「學名」）就會被誤判成不存在，導致篩選/匯入失敗。
+    這裡自動往下找「第一個看起來像正常表頭」的列（非空欄位數夠多），
+    跳過前面的標題列。
+    """
+    for i, row in enumerate(rows):
+        nonempty = sum(1 for c in row if (c or "").strip())
+        if nonempty >= min_nonempty:
+            return i
+    return 0
+
+
 def parse_csv_text(csv_text: str) -> list[dict[str, str]]:
-    """把 CSV 文字轉成 list[dict]（欄位名 -> 該列的值）。"""
-    f = io.StringIO(csv_text)
-    reader = csv.DictReader(f)
+    """把 CSV 文字轉成 list[dict]（欄位名 -> 該列的值）。
+    會自動偵測、跳過表頭上方可能存在的標題列，只做「去除頭尾空白」，
+    不做任何摘要/改寫/翻譯——確保逐字對應。"""
+    all_rows = list(csv.reader(io.StringIO(csv_text)))
+    if not all_rows:
+        return []
+    header_idx = _find_header_row_index(all_rows)
+    header = [(h or "").strip() for h in all_rows[header_idx]]
     rows = []
-    for row in reader:
-        rows.append({(k or "").strip(): (v or "").strip() for k, v in row.items()})
+    for raw in all_rows[header_idx + 1:]:
+        if not any((c or "").strip() for c in raw):
+            continue
+        rows.append({
+            header[i]: (raw[i].strip() if i < len(raw) and raw[i] else "")
+            for i in range(len(header))
+        })
     return rows
 
 

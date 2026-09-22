@@ -124,23 +124,24 @@ NUM_TOPICS = 10
 # ---------------------------------------------------------------------------
 # 7. 0-Token 結構化匯入（不使用 LLM 的主題）
 # ---------------------------------------------------------------------------
-# 主題1 封面：案件建立時藥師已經手動輸入過藥品英中文名，直接沿用即可。
-# 主題2 申請總表：來源是廠商/醫師填寫的「新進藥品申請表」（結構化表單），逐欄對應即可。
-# 主題9 臨床使用意見：來源是各院區藥師填寫的 Google 表單，逐字照登，AI 改寫反而是風險
-# （語言模型天生有「順一下文字」的傾向，光靠 Prompt 規則無法保證 100% 逐字不動）。
-# 一律用 Python 直接解析結構化資料寫入 payload，完全不呼叫 LLM，0 token 消耗。
 SKIP_LLM_TOPICS = {1, 2, 9}
 
+# 主題2「新進藥品申請表」欄位對應：對應到「115年新進藥品案件一覽表」實際欄名
+# （trade_name/商品名 用於跟學名組合成「商品名（學名）」顯示；
+# nhi_price/application_reason 已對齊實際表頭「健保價/票面價」「提藥醫師申請理由」；
+# needs_replace、replace_candidates 皆對應「取代品項」，因原表無獨立的是否取代欄位；
+# 「劑量/劑型」「作用機轉」這份表本身沒有對應欄位，匯入後需人工於編輯模式補上）。
 TOPIC2_DEFAULT_COLUMN_MAP = {
+    "trade_name": "商品名",
     "generic_name": "學名",
     "strength_form": "劑量/劑型",
     "moa": "作用機轉",
-    "nhi_price": "健保價/藥價",
-    "needs_replace": "須取代藥品",
-    "replace_candidates": "暫定取代藥品",
+    "nhi_price": "健保價/票面價",
+    "needs_replace": "取代品項",
+    "replace_candidates": "取代品項",
     "similar_drugs": "同類藥品",
     "indication": "衛福部核准適應症",
-    "application_reason": "申請理由",
+    "application_reason": "提藥醫師申請理由",
     "applicant_physician": "提藥醫師",
 }
 

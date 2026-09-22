@@ -126,8 +126,17 @@ def build_topic2_payload(row: dict[str, str], column_map: dict[str, str]) -> dic
     similar_raw = get("similar_drugs")
     reason_raw = get("application_reason")
 
+    trade_name = get("trade_name")
+    generic_name = get("generic_name")
+    # 使用者要求「藥名(學名)」那格同時顯示商品名，一眼就能看出是哪個品牌的藥；
+    # 商品名跟學名一樣時（或商品名沒填）就不重複顯示。
+    if trade_name and generic_name and trade_name != generic_name:
+        display_name = f"{trade_name}（{generic_name}）"
+    else:
+        display_name = trade_name or generic_name
+
     return {
-        "generic_name": get("generic_name"),
+        "generic_name": display_name,
         "strength_form": get("strength_form"),
         "moa": get("moa"),
         "nhi_price": get("nhi_price"),

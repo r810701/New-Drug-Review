@@ -7,7 +7,9 @@ modules/utils.py
 """
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 import re
 from pathlib import Path
@@ -18,11 +20,6 @@ from typing import Any, Optional
 # ---------------------------------------------------------------------------
 
 def compute_dir_fingerprint(dir_path: Path, patterns: tuple[str, ...] = ("*",)) -> str:
-    """
-    對資料夾內符合 patterns 的檔案，依「檔名 + mtime + size」算出一組 sha256 指紋。
-    只要管理藥師更新/覆蓋了任何一個知識庫檔案，這組指紋就會改變，
-    可以作為 st.cache_data 的 cache key，達成「一鍵清快取 + 有更新才重算」的效果。
-    """
     if not dir_path.exists():
         return "EMPTY"
     entries = []
@@ -35,7 +32,7 @@ def compute_dir_fingerprint(dir_path: Path, patterns: tuple[str, ...] = ("*",)) 
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
 
 # ---------------------------------------------------------------------------
-# PubMed / DOI 連結組裝（對應 Excel 規則：「文獻查證與交付」）
+# PubMed / DOI 連結組裝
 # ---------------------------------------------------------------------------
 
 def pubmed_url(pmid: str) -> str:
@@ -48,10 +45,6 @@ def doi_url(doi: str) -> str:
     return f"https://doi.org/{doi}"
 
 def autolink_citation(raw: str) -> str:
-    """
-    輸入形如 'PMID: 42387275' 或 'DOI:10.1001/xxx' 的字串，
-    回傳含完整跳轉網址的引用文字；辨識不出來就原樣回傳。
-    """
     raw = raw.strip()
     m = re.search(r"PMID[:\s]*([0-9]{4,9})", raw, flags=re.IGNORECASE)
     if m:
@@ -66,19 +59,16 @@ def autolink_citation(raw: str) -> str:
 # ---------------------------------------------------------------------------
 
 def strip_code_fences(text: str) -> str:
-    """去除 LLM 回覆中常見的 ```json ... ``` 包裹"""
     text = text.strip()
     text = re.sub(r"^```(json)?", "", text, flags=re.IGNORECASE).strip()
     text = re.sub(r"```$", "", text).strip()
     return text
 
 def safe_json_loads(text: str) -> Optional[Any]:
-    """盡量把 LLM 回覆解析成 JSON；失敗回傳 None（呼叫端要自行處理 fallback）"""
     cleaned = strip_code_fences(text)
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
-        # 嘗試擷取第一個 { ... } 或 [ ... ] 區塊再解析一次
         m = re.search(r"(\{.*\}|\[.*\])", cleaned, flags=re.DOTALL)
         if m:
             try:
@@ -88,10 +78,6 @@ def safe_json_loads(text: str) -> Optional[Any]:
         return None
 
 def abbreviate_common_terms(text: str) -> str:
-    """
-    套用 Excel 規則「文字精簡規範 / 專有名詞縮寫原則」的常見對照表。
-    這裡只放最常見、不會有歧義的縮寫；不確定的交給 AI 自行判斷，不強制取代。
-    """
     mapping = {
         "JAK inhibitor": "JAKi",
         "SGLT2 inhibitor": "SGLT2i",
@@ -110,12 +96,8 @@ def truncate(text: str, n: int = 60) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 # ---------------------------------------------------------------------------
-# 使用者上傳檔案的文字擷取（支援 PDF / Word / Excel / CSV / 純文字）
+# 使用者上傳檔案的文字擷取
 # ---------------------------------------------------------------------------
-# 修正紀錄：原本上傳區塊只把「檔名」丟進 AI 的 Prompt，AI 從未讀過檔案實際內容，
-# 導致引用文獻/數據完全是模型憑訓練知識腦補（例如同一篇知名試驗被套用到不相關主題）。
-# 這裡改成真的解析檔案內容，讓 AI 有真實文獻全文可以引用。
-
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 TEXT_EXTRACTABLE_EXTS = {".pdf", ".txt", ".md", ".docx", ".xlsx", ".csv"}
 
@@ -132,7 +114,7 @@ def _extract_pdf_text_full(path: Path) -> str:
 
 def _extract_docx_text(path: Path) -> str:
     try:
-        import docx  # python-docx
+        import docx
     except ImportError:
         return "（系統尚未安裝 python-docx，無法解析 Word 檔，請執行 `pip install python-docx`）"
     try:
@@ -164,7 +146,7 @@ def _extract_excel_text(path: Path) -> str:
                 if any(v is not None and str(v).strip() != "" for v in row):
                     lines.append(" | ".join("" if v is None else str(v) for v in row))
                     row_count += 1
-                if row_count > 300:  # 避免超大檔案把 Prompt 塞爆
+                if row_count > 300:
                     lines.append("...(此工作表列數過多，已截斷)")
                     break
         return "\n".join(lines)
@@ -174,12 +156,6 @@ def _extract_excel_text(path: Path) -> str:
 def extract_relevant_snippets(
     full_text: str, keywords: list[str], max_chars: int = 8000, context_chars: int = 500,
 ) -> Optional[str]:
-    """
-    在長文本中，找出包含任一關鍵字（不分大小寫）的位置，各自往前後擴展
-    context_chars 字元當作上下文，依原文出現順序合併相鄰/重疊片段後拼接，
-    直到湊滿 max_chars。找不到任何關鍵字時回傳 None，讓呼叫端自行退回
-    原本的「頭部截斷」邏輯，確保不會因為關鍵字沒命中就回傳空白內容。
-    """
     if not full_text or not keywords:
         return None
     lower_text = full_text.lower()
@@ -221,19 +197,6 @@ def extract_relevant_snippets(
 def extract_text_from_upload(
     path: Path, max_chars: int = 8000, keywords: Optional[list[str]] = None,
 ) -> str:
-    """
-    嘗試擷取上傳檔案的文字內容，供塞進 AI Prompt 使用。
-    回傳值一定是「可以直接顯示給使用者看」的字串（含失敗/不支援時的說明），
-    呼叫端不需要再另外判斷是否擷取成功。
-
-    keywords 有值時（目前僅主題7使用），改用「關鍵字智慧擷取」：不再死板地
-    只送文件開頭 max_chars 字元，而是優先擷取含關鍵字段落的上下文，同樣的
-    字元上限，但能抓到真正相關的內容（例如長篇HTA報告裡，給付決策段落
-    很可能不在文件開頭）。全文找不到任何關鍵字時，自動退回原本的頭部截斷。
-
-    圖片檔不走這裡——圖片是直接以視覺方式交給 AI（見 encode_image_for_claude /
-    load_image_for_gemini），文字擷取對圖片沒有意義。
-    """
     suffix = path.suffix.lower()
     if suffix == ".pdf":
         text = _extract_pdf_text_full(path)
@@ -250,7 +213,6 @@ def extract_text_from_upload(
     else:
         return f"（不支援自動擷取 .{suffix.lstrip('.')} 檔案的文字內容，AI 無法讀取此檔案）"
 
-    # 上面幾個分支若本身回傳的是「說明字串」（例如解析失敗訊息），直接原樣回傳，不要再截斷判斷
     if text.startswith("（") and text.endswith("）"):
         return text
 
@@ -263,37 +225,47 @@ def extract_text_from_upload(
         smart = extract_relevant_snippets(text, keywords, max_chars=max_chars)
         if smart:
             return smart + f"\n...(已依關鍵字智慧擷取相關段落，原文共 {len(text)} 字元)"
-        # 全文都找不到任何關鍵字命中時，退回原本的頭部截斷，並提醒人工確認
 
     if len(text) > max_chars:
         text = text[:max_chars] + f"\n...(內容過長已截斷，原文共 {len(text)} 字元，AI 僅看得到前 {max_chars} 字元)"
     return text
 
+def excel_to_csv_text(file_obj) -> str:
+    """
+    把上傳的 Excel 檔案（Streamlit UploadedFile 或檔案路徑）轉成 CSV 文字，
+    格式跟 Google 試算表匯出的 CSV 完全相容，可以直接沿用
+    structured_data.parse_csv_text() / parse_csv_two_row_header() 既有邏輯，
+    不用為了「上傳Excel」這個來源另外寫一套解析規則。
+    只讀取第一個工作表；儲存格值一律轉成字串，空白格轉成空字串。
+    """
+    import openpyxl
+    wb = openpyxl.load_workbook(file_obj, data_only=True)
+    ws = wb.worksheets[0]
+    f = io.StringIO()
+    writer = csv.writer(f)
+    for row in ws.iter_rows(values_only=True):
+        writer.writerow(["" if v is None else str(v) for v in row])
+    return f.getvalue()
+
 # ---------------------------------------------------------------------------
-# 圖片檔案：以視覺（vision）方式直接交給 AI 辨識，而非文字擷取
+# 圖片檔案：以視覺（vision）方式直接交給 AI 辨識
 # ---------------------------------------------------------------------------
 _MEDIA_TYPE_BY_SUFFIX = {
     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
 }
 
 def encode_image_for_claude(path: Path, max_dimension: int = 1568) -> tuple[str, str]:
-    """
-    回傳 (base64字串, media_type)，供 Claude vision API 的 image content block 使用。
-    有裝 Pillow 時會先等比例縮小到長邊 <= max_dimension（Anthropic 官方建議值，
-    超過這個尺寸只會增加費用/延遲，不會提升辨識品質）並轉存為 JPEG 以縮小檔案；
-    沒裝 Pillow 時退回直接讀取原始檔案 bytes（仍可運作，只是可能較大張、較貴）。
-    """
     import base64
     try:
         from PIL import Image
-        import io
+        import io as _io
         img = Image.open(path)
         img = img.convert("RGB")
         w, h = img.size
         scale = min(1.0, max_dimension / max(w, h))
         if scale < 1.0:
             img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))))
-        buf = io.BytesIO()
+        buf = _io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
         return base64.b64encode(buf.getvalue()).decode("ascii"), "image/jpeg"
     except ImportError:
@@ -302,9 +274,6 @@ def encode_image_for_claude(path: Path, max_dimension: int = 1568) -> tuple[str,
         return base64.b64encode(data).decode("ascii"), media_type
 
 def load_image_for_gemini(path: Path, max_dimension: int = 1568):
-    """回傳 PIL.Image 物件供 Gemini SDK 直接放進 generate_content([...]) 的內容列表；
-    沒裝 Pillow 時回傳 None，呼叫端應略過該張圖片並提示使用者。
-    同樣等比縮小到長邊 <= max_dimension，避免圖片過大浪費 token/費用。"""
     try:
         from PIL import Image
         img = Image.open(path).convert("RGB")
@@ -317,16 +286,12 @@ def load_image_for_gemini(path: Path, max_dimension: int = 1568):
         return None
 
 # ---------------------------------------------------------------------------
-# 使用者貼的連結：真正抓取內容（修正紀錄：原本只把網址文字塞進 Prompt，
-# AI 透過 API 呼叫本身沒有瀏覽器/上網能力，看到的只是一串文字，並不會知道網頁/表單內容）
+# 使用者貼的連結：真正抓取內容
 # ---------------------------------------------------------------------------
 _URL_RE = re.compile(r"https?://[^\s\u3000]+")
 _GSHEET_RE = re.compile(r"https://docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]+)")
 
 def _to_gsheet_csv_url(url: str) -> Optional[str]:
-    """把 Google 試算表的『編輯畫面網址』轉成可直接下載內容的 CSV 匯出網址。
-    需要該試算表是「知道連結的人皆可檢視」等公開權限，否則抓不到內容（會回 401/403，
-    在 fetch_url_content 裡會被判定為擷取失敗並誠實告知使用者，不會假裝抓到）。"""
     m = _GSHEET_RE.search(url)
     if not m:
         return None
@@ -343,11 +308,6 @@ def _strip_html(html: str) -> str:
     return html.strip()
 
 def fetch_url_content(url: str, max_chars: int = 6000, timeout: int = 10) -> str:
-    """
-    真正發送請求把連結內容抓回來，回傳可直接顯示給使用者/塞進 Prompt 的文字。
-    失敗（權限不公開、網路不通、逾時...）一律回傳「（...）」開頭的說明字串，
-    絕對不要讓呼叫端誤以為抓到內容。
-    """
     try:
         import requests
     except ImportError:
@@ -380,9 +340,7 @@ def fetch_url_content(url: str, max_chars: int = 6000, timeout: int = 10) -> str
     return text
 
 def extract_urls(text: str) -> list[str]:
-    """從使用者貼的文字裡抓出所有網址，逐一 fetch。"""
     return _URL_RE.findall(text or "")
 
 def strip_urls(text: str) -> str:
-    """移除文字中的網址，留下使用者順手寫的備註文字。"""
     return _URL_RE.sub("", text or "").strip()

@@ -230,6 +230,36 @@ def extract_text_from_upload(
         text = text[:max_chars] + f"\n...(內容過長已截斷，原文共 {len(text)} 字元，AI 僅看得到前 {max_chars} 字元)"
     return text
 
+def pdf_pages_to_images(pdf_path: Path, out_dir: Path, dpi: int = 150, max_pages: int = 6) -> list[Path]:
+    """
+    有些廠商提供的其實是「掃描/排版好的照片，包裝成PDF檔案」（仿單照片、外盒圖等），
+    這種PDF擷取不到文字（_extract_pdf_text_full 會回傳掃描影像型PDF的說明訊息），
+    但頁面本身其實是一張張圖片——這裡把每一頁轉存成PNG，讓系統能像處理JPG/PNG
+    一樣直接把這些圖片交給AI視覺辨識，或用於封面插圖，而不是被判定為「讀不到」而浪費掉。
+    用 PyMuPDF（fitz）轉換，純Python套件、不需要額外安裝系統層級的Poppler程式，
+    適合部署在Streamlit Cloud等沒有系統管理權限的環境。
+    """
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        return []
+    try:
+        doc = fitz.open(str(pdf_path))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        paths = []
+        zoom = dpi / 72
+        matrix = fitz.Matrix(zoom, zoom)
+        for i, page in enumerate(doc):
+            if i >= max_pages:
+                break
+            pix = page.get_pixmap(matrix=matrix)
+            out_path = out_dir / f"{pdf_path.stem}_p{i + 1}.png"
+            pix.save(str(out_path))
+            paths.append(out_path)
+        return paths
+    except Exception:  # noqa: BLE001
+        return []
+
 def excel_to_csv_text(file_obj) -> str:
     """
     把上傳的 Excel 檔案（Streamlit UploadedFile 或檔案路徑）轉成 CSV 文字，

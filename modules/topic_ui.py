@@ -152,7 +152,7 @@ def render_slide_preview_html(topic_no: int, title: str, payload: dict) -> str:
 <style>
 .ndaw-slide-outer {{ margin-bottom:10px; }}
 .ndaw-slide-card {{
-    aspect-ratio:16/9; background:#fff; border-radius:14px;
+    min-height:160px; background:#fff; border-radius:14px;
     box-shadow:0 2px 12px rgba(0,0,0,.10); border:1px solid #e6e0e0;
     display:flex; flex-direction:column; overflow:hidden;
     font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;
@@ -162,7 +162,7 @@ def render_slide_preview_html(topic_no: int, title: str, payload: dict) -> str:
     padding:10px 20px; font-weight:700; font-size:15px; flex-shrink:0;
 }}
 .ndaw-slide-body {{
-    padding:12px 22px; overflow-y:auto; font-size:12.5px; color:#2a2a2a; flex:1; line-height:1.5;
+    padding:12px 22px; max-height:420px; overflow-y:auto; font-size:12.5px; color:#2a2a2a; flex:1; line-height:1.5;
 }}
 .ndaw-slide-empty {{
     color:#999; font-size:13px; text-align:center; margin-top:30px; padding:0 20px;

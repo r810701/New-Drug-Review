@@ -8,3 +8,4 @@ Pillow>=10.0
 requests>=2.31
 anthropic>=0.34
 google-generativeai>=0.8
+pymupdf>=1.24

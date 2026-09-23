@@ -493,7 +493,7 @@ def render_case_workspace(drug_case: DrugCase) -> None:
     st.markdown("#### 3️⃣ 下載簡報")
     if st.button("📥 產生並下載 .pptx", type="primary"):
         try:
-            topic1_files = case_store.uploads_dir(drug_case.slug, 1).glob("*")
+            topic1_files = case_store.uploads_dir(drug_case.slug, 1).rglob("*")
             cover_image_paths = {1: [p for p in topic1_files if p.suffix.lower() in utils.IMAGE_EXTS]}
             out_path = case_store.outputs_dir(drug_case.slug) / f"{drug_case.slug}_新進藥品評估.pptx"
             ppt_builder.build_deck_pptx(deck, kb, out_path, cover_image_paths)

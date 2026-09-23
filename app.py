@@ -316,8 +316,15 @@ def _render_upload_widget(topic_no: int, drug_case: DrugCase) -> tuple[str, list
         )
         ctx_parts.append(f"== 使用者上傳檔案：{p.name} ==\n{extracted}")
         is_note = extracted.startswith("（") and extracted.endswith("）")
-        if is_note:
-            st.caption(f"⚠️ {p.name}：{extracted}")
+        if is_note and p.suffix.lower() == ".pdf" and "掃描影像型" in extracted:
+            # 這份PDF其實是照片包裝成的檔案，擷取不到文字很正常，
+            # 改成把每一頁轉成圖片，跟一般JPG/PNG一樣被使用（封面插圖／AI視覺辨識）。
+            rendered = utils.pdf_pages_to_images(p, target_dir / "_pdf_pages")
+            if rendered:
+                image_files.extend(rendered)
+                st.caption(f"🖼️ 「{p.name}」偵測為圖片型PDF，已自動轉成 {len(rendered)} 張圖片使用")
+            else:
+                st.caption(f"⚠️ {p.name}：{extracted}")
         elif topic_no == 1:
             st.caption(
                 f"ℹ️ 已擷取「{p.name}」文字內容（{len(extracted)} 字元），"

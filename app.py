@@ -4,9 +4,13 @@ app.py
 ======
 新藥初審 AI 工作台 — Streamlit 入口。
 
+版面重構（v2）：每個主題只有一個 expander，內含「投餵資料 → 產生 → 預覽 →
+人工編輯」完整流程，取代先前「先統一投餵、再統一產生」的兩階段設計，
+避免一鍵整批產生時，已手動編輯過的主題被無條件覆蓋掉。
+
 頁面配置：
 Sidebar : 登入 / 知識庫狀態與「🔄 載入最新資料庫」/ Anthropic API Key
-Tab 1   : 📋 新藥審查工作台（建立案件、上傳文獻、AI 產生簡報、逐頁編輯、下載）
+Tab 1   : 📋 新藥審查工作台（建立案件、逐主題投餵/產生/編輯、下載）
 Tab 2   : 🧭 十宮格總覽（本案十宮格燈號一覽 + 人工覆核）
 Tab 3   : ⚙️ 後台管理（僅 管理藥師/主管：Prompt 覆蓋、門檻調整、帳號管理、KB 檢視）
 
@@ -14,6 +18,7 @@ Tab 3   : ⚙️ 後台管理（僅 管理藥師/主管：Prompt 覆蓋、門檻
 """
 from __future__ import annotations
 
+import json as _json
 import os
 from pathlib import Path
 
@@ -102,7 +107,7 @@ def render_sidebar_kb_panel() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tab 1：新藥審查工作台
+# Tab 1：案件選擇
 # ---------------------------------------------------------------------------
 
 def render_case_selector() -> DrugCase:
@@ -140,122 +145,20 @@ def render_case_selector() -> DrugCase:
     return DrugCase(case_id=case_id or "未命名案件", applicant_department=dept if 'dept' in dir() else "")
 
 
-def render_upload_section(drug_case: DrugCase) -> tuple[dict[int, str], dict[int, list[Path]]]:
-    """
-    讓使用者針對每個主題拖拉上傳文獻/貼上 Google 表單連結。
-    回傳 (user_context, image_paths_by_topic)：
-      - user_context：PDF/Word/Excel/CSV/文字檔擷取出的內容 + 使用者手動貼的文字/連結
-      - image_paths_by_topic：JPG/PNG 檔案路徑（不做文字擷取，交給 AI 以視覺方式直接辨識）
-    一律以磁碟上『該案件/該主題』資料夾內容為準（不只看這次新選的檔案），
-    避免換頁、重新整理、或按「只重新產生這頁」時，先前上傳的檔案被當作沒上傳過。
-    """
-    st.markdown("#### 2️⃣ 針對各主題投餵補充資料（可選）")
-    st.caption(
-        "支援 PDF、Word (.docx)、Excel (.xlsx)、CSV、純文字檔、圖片 (JPG/PNG)，"
-        "或直接貼上 Google 表單/雲端連結；AI 會優先參考您提供的資料。"
-    )
-    kb = data_loader.load_knowledge_base()
-    user_context: dict[int, str] = {}
-    image_paths_by_topic: dict[int, list[Path]] = {}
-
-    cols = st.columns(2)
-    for topic_no in range(1, config.NUM_TOPICS + 1):
-        spec = kb.topic(topic_no)
-        title = spec.slide_title_template.split("\n")[0] if spec else f"主題{topic_no}"
-
-        with cols[(topic_no - 1) % 2].expander(f"主題 {topic_no}：{title}"):
-            files = st.file_uploader(
-                "上傳檔案（PDF / Word / Excel / CSV / 圖片）",
-                type=["pdf", "docx", "xlsx", "csv", "txt", "md", "png", "jpg", "jpeg"],
-                accept_multiple_files=True, key=f"upl_{drug_case.slug}_{topic_no}",
-            )
-            link_text = st.text_area(
-                "或貼上連結/文字（Google 表單彙整、通訊錄、網址等）",
-                key=f"link_{drug_case.slug}_{topic_no}", height=80,
-            )
-
-            target_dir = case_store.uploads_dir(drug_case.slug, topic_no)
-            if files:
-                for f in files:
-                    (target_dir / f.name).write_bytes(f.getbuffer())
-
-            all_files = sorted(target_dir.glob("*")) if target_dir.exists() else []
-            doc_files = [p for p in all_files if p.suffix.lower() not in utils.IMAGE_EXTS]
-            image_files = [p for p in all_files if p.suffix.lower() in utils.IMAGE_EXTS]
-
-            ctx_parts = []
-            for p in doc_files:
-                # 修正：先前這裡只丟檔名給 AI，AI 從未讀過檔案內容，
-                # 導致引用文獻/數據是模型憑訓練知識腦補，與使用者實際上傳的文獻不符。
-                # 主題7的HTA報告篇幅長，改用關鍵字智慧擷取，避免真正的決策段落
-                # 埋在文件中後段、被單純的「頭部截斷」漏掉。
-                extracted = utils.extract_text_from_upload(
-                    p, keywords=config.TOPIC7_HTA_KEYWORDS if topic_no == 7 else None,
-                )
-                ctx_parts.append(f"== 使用者上傳檔案：{p.name} ==\n{extracted}")
-                is_note = extracted.startswith("（") and extracted.endswith("）")
-                if is_note:
-                    st.caption(f"⚠️ {p.name}：{extracted}")
-                else:
-                    st.caption(f"✅ 已擷取「{p.name}」文字內容（{len(extracted)} 字元），將提供給 AI 參考")
-
-            for p in image_files:
-                st.caption(f"🖼️ 「{p.name}」將以圖片方式直接提供給 AI 視覺辨識（非文字擷取）")
-            if len(image_files) > config.MAX_IMAGES_PER_TOPIC:
-                st.caption(
-                    f"⚠️ 本主題圖片共 {len(image_files)} 張，超過單次送出上限 "
-                    f"{config.MAX_IMAGES_PER_TOPIC} 張，只有前 {config.MAX_IMAGES_PER_TOPIC} 張會被 AI 看到。"
-                )
-
-            if link_text.strip():
-                urls = utils.extract_urls(link_text)
-                if urls:
-                    for url in urls:
-                        fetched = utils.fetch_url_content(url)
-                        ctx_parts.append(f"== 使用者貼上連結：{url} ==\n{fetched}")
-                        is_note = fetched.startswith("（") and fetched.endswith("）")
-                        if is_note:
-                            st.caption(f"⚠️ 連結擷取失敗：{fetched}")
-                        else:
-                            st.caption(f"✅ 已抓取連結內容（{len(fetched)} 字元），將提供給 AI 參考")
-                    non_url_text = utils.strip_urls(link_text)
-                    if non_url_text:
-                        ctx_parts.append(f"== 使用者補充文字 ==\n{non_url_text}")
-                else:
-                    ctx_parts.append(f"== 使用者補充文字 ==\n{link_text.strip()}")
-
-            user_context[topic_no] = "\n\n".join(ctx_parts)
-            image_paths_by_topic[topic_no] = image_files
-
-    return user_context, image_paths_by_topic
-
+# ---------------------------------------------------------------------------
+# 主題2/9 專用：結構化匯入區塊
+# ---------------------------------------------------------------------------
 
 def _render_structured_import_block(
-    topic_no: int, drug_case: DrugCase, deck: Deck, content: TopicContent, kb_local,
+    topic_no: int, drug_case: DrugCase, deck: Deck, content: TopicContent,
 ) -> None:
     """
-    主題 1/2/9 專用：完全不呼叫 LLM 的結構化資料匯入 UI。
-    主題2、9 支援兩種資料來源：貼 Google 試算表網址，或直接上傳下載好的 Excel 檔案
-    （後者可完全繞開 Google 試算表的分享權限設定問題）。兩種來源都會先轉成
-    CSV 文字，再沿用同一套 parse_csv_text/parse_csv_two_row_header 後續邏輯，
-    0 token 消耗，且保證逐字不改（尤其主題9的 Google 表單臨床意見）。
-    主題2對應的試算表本身鎖了分享權限，抓不到內容，固定只走上傳Excel這條路，
-    不顯示「Google 試算表網址」選項，避免使用者誤選了註定會失敗的方式。
+    主題 2/9 專用：完全不呼叫 LLM 的結構化資料匯入 UI。
+    主題2對應的試算表鎖了分享權限，固定只走「上傳Excel檔案」；
+    主題9支援「Google試算表網址」或「上傳Excel檔案」兩種來源。
+    兩種來源都會先轉成CSV文字，沿用同一套解析邏輯，0 token 消耗，
+    且保證逐字不改（尤其主題9的 Google 表單臨床意見）。
     """
-    if topic_no == 1:
-        st.caption("封面內容直接沿用建立案件時填寫的英文/中文商品名，不需要、也不會呼叫 AI。")
-        if st.button("📥 套用案件資料（0 Token）", key="import_topic1"):
-            new_content = TopicContent(
-                topic_no=1, title=content.title, reviewer_note=content.reviewer_note,
-                payload=structured_data.build_topic1_payload(drug_case),
-                is_ai_generated=False, is_human_edited=False,
-            )
-            deck.topics[1] = new_content
-            case_store.save_deck(deck)
-            st.success("已套用案件資料。")
-            st.rerun()
-        return
-
     saved_cfg = case_store.load_structured_source(drug_case.slug, topic_no)
     default_map = config.TOPIC2_DEFAULT_COLUMN_MAP if topic_no == 2 else config.TOPIC9_DEFAULT_COLUMN_MAP
     source_label = "廠商/醫師填寫的新進藥品申請表" if topic_no == 2 else "各院區藥師填寫的臨床意見 Google 表單"
@@ -265,8 +168,6 @@ def _render_structured_import_block(
     )
 
     if topic_no == 2:
-        # 主題2對應的Google試算表有分享權限限制，抓不到內容，固定只走上傳Excel這條路，
-        # 不再顯示「Google 試算表網址」選項，避免使用者誤選了註定會失敗的方式。
         source_mode = "上傳 Excel 檔案"
     else:
         source_mode = st.radio(
@@ -379,107 +280,135 @@ def _render_structured_import_block(
                     st.rerun()
 
 
-def render_generate_and_edit(
-    drug_case: DrugCase, user_context: dict[int, str],
-    image_paths_by_topic: dict[int, list[Path]],
-) -> None:
-    st.markdown("#### 3️⃣ 產生 / 編輯簡報內容")
-    kb = data_loader.load_knowledge_base()
-    deck = case_store.load_deck(drug_case.slug) or Deck(drug_case=drug_case)
+# ---------------------------------------------------------------------------
+# 每個主題的完整工作區塊：投餵 → 產生 → 預覽 → 編輯，全部在同一個 expander 裡
+# ---------------------------------------------------------------------------
 
-    outcome_hint = st.selectbox(
-        "（選填）預期結論方向，協助 AI 選用對應語氣範例",
-        ["自動判斷", "不須取代品項", "需取代品項", "建議比價"],
-        help="對應語句範例庫三大類別；不確定可選『自動判斷』。",
+def _render_upload_widget(topic_no: int, drug_case: DrugCase) -> tuple[str, list[Path]]:
+    """
+    通用上傳元件（主題1、3~8、10 共用）：拖曳上傳文獻/圖片、貼連結。
+    回傳 (擷取後的文字內容, 圖片檔案路徑清單)。
+    主題1不會呼叫AI，這裡擷取出的PDF/Word文字目前不會被實際使用——只有照片
+    會被用到（插入簡報封面），畫面上會誠實標註這點，避免誤以為文字有生效。
+    """
+    files = st.file_uploader(
+        "上傳檔案（PDF / Word / Excel / CSV / 圖片）",
+        type=["pdf", "docx", "xlsx", "csv", "txt", "md", "png", "jpg", "jpeg"],
+        accept_multiple_files=True, key=f"upl_{drug_case.slug}_{topic_no}",
     )
-    hint = None if outcome_hint == "自動判斷" else outcome_hint
+    link_text = st.text_area(
+        "或貼上連結/文字", key=f"link_{drug_case.slug}_{topic_no}", height=70,
+    )
 
-    ai_topic_total = config.NUM_TOPICS - len(config.SKIP_LLM_TOPICS)
+    target_dir = case_store.uploads_dir(drug_case.slug, topic_no)
+    if files:
+        for f in files:
+            (target_dir / f.name).write_bytes(f.getbuffer())
 
-    b1, b2 = st.columns([1, 1])
-    if b1.button(f"🤖 一鍵產生 AI 主題（{ai_topic_total} 題，主題1/2/9 不耗用額度）",
-                 type="primary", use_container_width=True):
-        dog_placeholder = st.empty()
-        dog_placeholder.markdown(
-            ui_widgets.dog_digging_progress(0, f"已完成 0/{ai_topic_total} 個 AI 主題"),
-            unsafe_allow_html=True,
+    all_files = sorted(target_dir.glob("*")) if target_dir.exists() else []
+    doc_files = [p for p in all_files if p.suffix.lower() not in utils.IMAGE_EXTS]
+    image_files = [p for p in all_files if p.suffix.lower() in utils.IMAGE_EXTS]
+
+    ctx_parts = []
+    for p in doc_files:
+        extracted = utils.extract_text_from_upload(
+            p, keywords=config.TOPIC7_HTA_KEYWORDS if topic_no == 7 else None,
         )
-        status_area = st.empty()
-        failed_topics: list[int] = []
-        done_count = {"n": 0}
-
-        def _cb(topic_no: int, content: TopicContent) -> None:
-            ok = "_generation_error" not in content.payload
-            done_count["n"] += 1
-            if not ok:
-                failed_topics.append(topic_no)
-            label = (
-                f"{'✅' if ok else '❌'} 已完成主題 {topic_no}/{config.NUM_TOPICS}"
-                + ("（有主題失敗，將繼續產生其他主題）" if failed_topics else "")
-            )
-            dog_placeholder.markdown(
-                ui_widgets.dog_digging_progress(topic_no / config.NUM_TOPICS * 100, label),
-                unsafe_allow_html=True,
-            )
-
-        def _save(d: Deck) -> None:
-            case_store.save_deck(d)
-
-        deck = ai_engine.generate_full_deck(
-            kb, drug_case, user_context, progress_callback=_cb,
-            image_paths_by_topic=image_paths_by_topic,
-            existing_deck=deck, save_callback=_save,
-        )
-
-        if failed_topics:
-            failed_str = "、".join(str(n) for n in failed_topics)
-            status_area.warning(
-                f"⚠️ 已完成 {ai_topic_total - len(failed_topics)}/{ai_topic_total} 個 AI 主題，"
-                f"主題 {failed_str} 生成失敗（常見原因：API 配額用盡、網路逾時）。"
-                "已成功的主題已經存檔，不需要重打；請展開下方對應主題，"
-                "等一下再按「只重新產生這頁」個別重試即可。"
+        ctx_parts.append(f"== 使用者上傳檔案：{p.name} ==\n{extracted}")
+        is_note = extracted.startswith("（") and extracted.endswith("）")
+        if is_note:
+            st.caption(f"⚠️ {p.name}：{extracted}")
+        elif topic_no == 1:
+            st.caption(
+                f"ℹ️ 已擷取「{p.name}」文字內容（{len(extracted)} 字元），"
+                "但主題1目前不呼叫AI，此文字僅供您自行參考，尚未被系統實際使用。"
             )
         else:
-            status_area.success(
-                f"✅ {ai_topic_total} 個 AI 主題已完成初稿，請於下方逐頁校對。"
-                "（主題1/2/9 請往下用「結構化匯入」，不需要也不會耗用 AI 額度）"
-            )
+            st.caption(f"✅ 已擷取「{p.name}」文字內容（{len(extracted)} 字元），將提供給 AI 參考")
 
-    if b2.button("💾 儲存目前編輯內容", use_container_width=True):
-        case_store.save_deck(deck)
-        st.success("已儲存。")
+    for p in image_files:
+        if topic_no == 1:
+            st.caption(f"🖼️ 「{p.name}」將作為封面照片插入簡報第1頁")
+        else:
+            st.caption(f"🖼️ 「{p.name}」將以圖片方式直接提供給 AI 視覺辨識（非文字擷取）")
+    if len(image_files) > config.MAX_IMAGES_PER_TOPIC:
+        st.caption(
+            f"⚠️ 本主題圖片共 {len(image_files)} 張，超過單次送出上限 "
+            f"{config.MAX_IMAGES_PER_TOPIC} 張，只有前 {config.MAX_IMAGES_PER_TOPIC} 張會被 AI 看到。"
+        )
 
-    if not deck.topics:
-        st.info("尚未產生內容，請先點擊上方「一鍵產生全份簡報」，或於下方個別主題手動產生。")
+    if link_text.strip():
+        urls = utils.extract_urls(link_text)
+        if urls:
+            for url in urls:
+                fetched = utils.fetch_url_content(url)
+                ctx_parts.append(f"== 使用者貼上連結：{url} ==\n{fetched}")
+                is_note = fetched.startswith("（") and fetched.endswith("）")
+                if is_note:
+                    st.caption(f"⚠️ 連結擷取失敗：{fetched}")
+                else:
+                    st.caption(f"✅ 已抓取連結內容（{len(fetched)} 字元），將提供給 AI 參考")
+            non_url_text = utils.strip_urls(link_text)
+            if non_url_text:
+                ctx_parts.append(f"== 使用者補充文字 ==\n{non_url_text}")
+        else:
+            ctx_parts.append(f"== 使用者補充文字 ==\n{link_text.strip()}")
 
-    kb_local = kb
-    for topic_no in range(1, config.NUM_TOPICS + 1):
-        spec = kb_local.topic(topic_no)
-        title = spec.slide_title_template.split("\n")[0] if spec else f"主題{topic_no}"
-        content = deck.topics.get(topic_no, TopicContent(topic_no=topic_no, title=title))
-        has_error = "_generation_error" in content.payload
-        status_icon = "❌ " if has_error else ("✅ " if content.is_ai_generated or content.is_human_edited else "")
+    return "\n\n".join(ctx_parts), image_files
 
-        with st.expander(f"📑 {status_icon}主題 {topic_no}：{title}", expanded=has_error):
-            if has_error:
-                st.error(f"上次生成失敗：{content.payload['_generation_error']}")
 
-            if topic_no in config.SKIP_LLM_TOPICS:
-                _render_structured_import_block(topic_no, drug_case, deck, content, kb_local)
-                content = deck.topics.get(topic_no, content)
+def render_topic_section(topic_no: int, drug_case: DrugCase, deck: Deck, kb_local, hint) -> None:
+    """單一主題的完整工作區塊：投餵資料 → 產生 → 預覽 → 人工編輯，全部收在同一個 expander。"""
+    spec = kb_local.topic(topic_no)
+    title_default = spec.slide_title_template.split("\n")[0] if spec else f"主題{topic_no}"
+    content = deck.topics.get(topic_no, TopicContent(topic_no=topic_no, title=title_default))
+    has_error = "_generation_error" in content.payload
+    status_icon = "❌ " if has_error else ("✅ " if content.is_ai_generated or content.is_human_edited else "")
+
+    with st.expander(f"📑 {status_icon}主題 {topic_no}：{title_default}", expanded=True):
+        if has_error:
+            st.error(f"上次生成失敗：{content.payload['_generation_error']}")
+
+        st.markdown("##### 📎 投餵資料")
+        image_files: list[Path] = []
+        topic_context = ""
+
+        if topic_no in (2, 9):
+            _render_structured_import_block(topic_no, drug_case, deck, content)
+            content = deck.topics.get(topic_no, content)
+        else:
+            topic_context, image_files = _render_upload_widget(topic_no, drug_case)
+
+            st.markdown("##### 🤖 產生")
+            if topic_no == 1:
+                if st.button("📥 套用案件資料（0 Token）", key="import_topic1"):
+                    new_content = TopicContent(
+                        topic_no=1, title=content.title, reviewer_note=content.reviewer_note,
+                        payload=structured_data.build_topic1_payload(drug_case),
+                        is_ai_generated=False, is_human_edited=False,
+                    )
+                    deck.topics[1] = new_content
+                    case_store.save_deck(deck)
+                    st.success("已套用案件資料。")
+                    st.rerun()
             else:
-                gen_col, _ = st.columns([1, 3])
-                if gen_col.button("只重新產生這頁", key=f"regen_{topic_no}"):
+                already_has_content = content.is_ai_generated or content.is_human_edited
+                btn_label = "🔄 重新產生本頁內容" if already_has_content else "🤖 AI 產生本頁內容"
+                if st.button(btn_label, key=f"regen_{topic_no}", type="primary"):
+                    counter = st.session_state.get("anim_group_counter", 0)
+                    st.session_state["anim_group_counter"] = counter + 1
                     seedtree_placeholder = st.empty()
                     seedtree_placeholder.markdown(
-                        ui_widgets.seed_tree_indicator(f"AI 讀取主題 {topic_no} 資料中..."),
+                        ui_widgets.seed_tree_indicator(
+                            f"AI 讀取主題 {topic_no} 資料中...", group_index=counter,
+                        ),
                         unsafe_allow_html=True,
                     )
                     old_note = content.reviewer_note
                     try:
                         content = ai_engine.generate_topic_content(
-                            topic_no, kb_local, drug_case, user_context.get(topic_no, ""), hint,
-                            image_paths=image_paths_by_topic.get(topic_no),
+                            topic_no, kb_local, drug_case, topic_context, hint,
+                            image_paths=image_files,
                         )
                         content.reviewer_note = old_note
                         deck.topics[topic_no] = content
@@ -491,64 +420,76 @@ def render_generate_and_edit(
                             deck.final_recommendation = ai_reco or ai_engine.compute_recommendation(deck.ten_grid)
                         case_store.save_deck(deck)
                         seedtree_placeholder.empty()
-                        st.success("已重新產生，請確認下方內容。")
+                        st.success("已產生，請確認下方內容。")
                     except Exception as e:  # noqa: BLE001
                         seedtree_placeholder.empty()
                         st.error(f"生成失敗：{e}")
 
-            st.markdown(
-                topic_ui.render_slide_preview_html(topic_no, content.title or title, content.payload),
-                unsafe_allow_html=True,
+        st.markdown("##### 👁️ 預覽")
+        st.markdown(
+            topic_ui.render_slide_preview_html(topic_no, content.title or title_default, content.payload),
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("##### ✏️ 人工編輯")
+        with st.form(key=f"edit_form_{topic_no}"):
+            new_title = st.text_input("投影片標題", value=content.title or title_default, key=f"title_{topic_no}")
+            new_payload = topic_ui.render_editable_form(topic_no, content.payload, key_prefix=f"field_{topic_no}")
+            new_note = st.text_area(
+                "🗒️ 審查備註（僅供內部工作紀錄，不會出現在簡報上；重新產生此頁時會保留）",
+                value=content.reviewer_note, key=f"note_{topic_no}", height=70,
             )
+            applied = st.form_submit_button("✅ 套用修改", type="primary")
+            if applied:
+                content.title = new_title
+                content.payload = new_payload
+                content.reviewer_note = new_note
+                content.is_human_edited = True
+                content.last_edited_by = getattr(auth.current_user(), "display_name", "")
+                deck.topics[topic_no] = content
+                case_store.save_deck(deck)
+                st.success("已套用修改並儲存，上方預覽卡片已同步更新。")
+                st.rerun()
 
-            with st.form(key=f"edit_form_{topic_no}"):
-                st.markdown("##### ✏️ 簡易編輯模式")
-                new_title = st.text_input("投影片標題", value=content.title or title, key=f"title_{topic_no}")
-                new_payload = topic_ui.render_editable_form(
-                    topic_no, content.payload, key_prefix=f"field_{topic_no}"
-                )
-                new_note = st.text_area(
-                    "🗒️ 審查備註（僅供內部工作紀錄，不會出現在簡報上；重新產生此頁時會保留）",
-                    value=content.reviewer_note, key=f"note_{topic_no}", height=70,
-                )
-                applied = st.form_submit_button("✅ 套用修改", type="primary")
-
-                if applied:
-                    content.title = new_title
-                    content.payload = new_payload
-                    content.reviewer_note = new_note
+        with st.expander("🛠️ 進階：原始 JSON（複雜的巢狀內容，或想整段貼上/複製時使用）"):
+            edited_json = st.text_area(
+                "內容（JSON）", value=_pretty_json(content.payload), height=200, key=f"json_{topic_no}",
+            )
+            if st.button("套用 JSON", key=f"apply_json_{topic_no}"):
+                try:
+                    content.payload = _json.loads(edited_json)
                     content.is_human_edited = True
                     content.last_edited_by = getattr(auth.current_user(), "display_name", "")
                     deck.topics[topic_no] = content
                     case_store.save_deck(deck)
-                    st.success("已套用修改並儲存，上方預覽卡片已同步更新。")
+                    st.success("已套用並儲存。")
                     st.rerun()
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"JSON 格式錯誤：{e}")
 
-            with st.expander("🛠️ 進階：原始 JSON（複雜的巢狀內容，或想整段貼上/複製時使用）"):
-                edited_json = st.text_area(
-                    "內容（JSON）", value=_pretty_json(content.payload),
-                    height=220, key=f"json_{topic_no}",
-                )
-                if st.button("套用 JSON", key=f"apply_json_{topic_no}"):
-                    import json as _json
-                    try:
-                        content.payload = _json.loads(edited_json)
-                        content.is_human_edited = True
-                        content.last_edited_by = getattr(auth.current_user(), "display_name", "")
-                        deck.topics[topic_no] = content
-                        case_store.save_deck(deck)
-                        st.success("已套用並儲存。")
-                        st.rerun()
-                    except Exception as e:  # noqa: BLE001
-                        st.error(f"JSON 格式錯誤：{e}")
 
-    st.markdown("#### 4️⃣ 下載簡報")
+def render_case_workspace(drug_case: DrugCase) -> None:
+    kb = data_loader.load_knowledge_base()
+    deck = case_store.load_deck(drug_case.slug) or Deck(drug_case=drug_case)
+
+    st.markdown("#### 2️⃣ 逐主題投餵資料 / 產生 / 編輯")
+    outcome_hint = st.selectbox(
+        "（選填）預期結論方向，協助 AI 選用對應語氣範例",
+        ["自動判斷", "不須取代品項", "需取代品項", "建議比價"],
+        help="對應語句範例庫三大類別；不確定可選『自動判斷』。",
+    )
+    hint = None if outcome_hint == "自動判斷" else outcome_hint
+
+    for topic_no in range(1, config.NUM_TOPICS + 1):
+        render_topic_section(topic_no, drug_case, deck, kb, hint)
+
+    st.markdown("#### 3️⃣ 下載簡報")
     if st.button("📥 產生並下載 .pptx", type="primary"):
         try:
             topic1_files = case_store.uploads_dir(drug_case.slug, 1).glob("*")
             cover_image_paths = {1: [p for p in topic1_files if p.suffix.lower() in utils.IMAGE_EXTS]}
             out_path = case_store.outputs_dir(drug_case.slug) / f"{drug_case.slug}_新進藥品評估.pptx"
-            ppt_builder.build_deck_pptx(deck, kb_local, out_path, cover_image_paths)
+            ppt_builder.build_deck_pptx(deck, kb, out_path, cover_image_paths)
             with open(out_path, "rb") as f:
                 st.download_button(
                     "點此下載簡報（下載後仍可用 PowerPoint 手動編修）",
@@ -560,8 +501,7 @@ def render_generate_and_edit(
 
 
 def _pretty_json(obj) -> str:
-    import json
-    return json.dumps(obj, ensure_ascii=False, indent=2)
+    return _json.dumps(obj, ensure_ascii=False, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -709,9 +649,7 @@ def main() -> None:
         drug_case = render_case_selector()
         st.session_state["current_case_slug"] = drug_case.slug
         st.divider()
-        user_context, image_paths_by_topic = render_upload_section(drug_case)
-        st.divider()
-        render_generate_and_edit(drug_case, user_context, image_paths_by_topic)
+        render_case_workspace(drug_case)
 
     with tab2:
         slug = st.session_state.get("current_case_slug")

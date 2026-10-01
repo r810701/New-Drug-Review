@@ -372,7 +372,7 @@ def render_topic_section(topic_no: int, drug_case: DrugCase, deck: Deck, kb_loca
     has_error = "_generation_error" in content.payload
     status_icon = "❌ " if has_error else ("✅ " if content.is_ai_generated or content.is_human_edited else "")
 
-    with st.expander(f"📑 {status_icon}主題 {topic_no}：{title_default}", expanded=True):
+    with st.expander(f"📑 {status_icon}主題 {topic_no}：{title_default}", expanded=has_error):
         if has_error:
             st.error(f"上次生成失敗：{content.payload['_generation_error']}")
 
